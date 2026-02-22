@@ -118,33 +118,72 @@ cp config.example.json config.json
 
 All call policy and security settings are configurable at runtime via the control center UI or `POST /api/config/call`.
 
-## Running
+## Running — Starting and Stopping the Gateway
 
-### Start
+> **IMPORTANT FOR AGENTS**: The gateway consists of TWO processes that must both be running for calls to work: the **mlx_audio sidecar** (ASR/TTS inference) and the **gateway** (FastAPI API + control center). If either is not running, calls will fail silently — the phone picks up but produces no audio. When the user asks to start the gateway or reports call issues, **always check if both processes are running** (`lsof -i :8996 -i :8765 | grep LISTEN`). If not, tell the user they can start it manually with `bin/start.sh` and should run it in the background to keep it up while they work.
+
+### Start (recommended)
 
 ```bash
+cd /Applications/MAMP/htdocs/gpd/gateway
 bin/start.sh
 ```
 
-This starts two processes:
+This starts both processes in the foreground:
 1. **mlx_audio server** on `127.0.0.1:8765` — handles ASR and TTS model inference
 2. **Gateway** (FastAPI/uvicorn) on `127.0.0.1:8996` — phone API, control center UI, agent interface
 
-The script waits for mlx_audio to be healthy before starting the gateway. LLM is preloaded at gateway startup.
+The script waits for mlx_audio to be healthy before starting the gateway. LLM is preloaded at gateway startup. Ctrl+C stops both.
+
+**To run in the background** (recommended so it stays up while you work):
+
+```bash
+cd /Applications/MAMP/htdocs/gpd/gateway
+nohup bin/start.sh > /tmp/gateway-all.log 2>&1 &
+echo "Gateway starting in background, logs at /tmp/gateway-all.log"
+```
+
+Or if the agent is starting it programmatically:
+```bash
+cd /Applications/MAMP/htdocs/gpd/gateway && bin/start.sh > /tmp/gateway-all.log 2>&1 &
+```
 
 ### Stop
 
 ```bash
+cd /Applications/MAMP/htdocs/gpd/gateway
 bin/stop.sh
 ```
 
 Or kill individually:
 ```bash
-kill $(cat tmp/gateway.pid)
-kill $(cat tmp/mlx_audio.pid)
+kill $(cat tmp/gateway.pid) 2>/dev/null
+kill $(cat tmp/mlx_audio.pid) 2>/dev/null
 ```
 
+Or by port:
+```bash
+lsof -ti :8996 | xargs kill 2>/dev/null   # gateway
+lsof -ti :8765 | xargs kill 2>/dev/null   # mlx_audio
+```
+
+### Checking status
+
+```bash
+# Are both processes listening?
+lsof -i :8996 -i :8765 | grep LISTEN
+
+# Full health check
+curl -s http://127.0.0.1:8996/api/status | python3 -m json.tool
+```
+
+In the status response, check:
+- `mlx_audio.ok` should be `true` — if `false` or missing, mlx_audio is not running
+- `llm.loaded` should be `true` — if `false`, LLM failed to load
+
 ### Manual start (for debugging)
+
+Use this when you need separate log output for each process:
 
 ```bash
 source .venv/bin/activate
@@ -154,31 +193,51 @@ export HF_HOME="$(pwd)/.models"
 python -m mlx_audio.server --host 127.0.0.1 --port 8765
 
 # Terminal 2: gateway
-python -m uvicorn app:app --host 127.0.0.1 --port 8996 --log-level info
+python app.py
 ```
+
+### Restarting after code changes
+
+The gateway serves `static/index.html` from disk on each request, but Python code changes require a restart:
+
+```bash
+cd /Applications/MAMP/htdocs/gpd/gateway
+bin/stop.sh && bin/start.sh > /tmp/gateway-all.log 2>&1 &
+```
+
+> **Browser cache warning**: After restarting the gateway, the control center UI may still show old HTML from the browser cache. Always hard-refresh (Cmd+Shift+R) after a gateway restart.
 
 ## Pre-warming Models
 
-First request to each model has extra latency (model loading into GPU memory). Pre-warm after startup:
+First request to each model has extra latency due to model loading into GPU memory. **Without warming, the first phone call will fail** — the greeting TTS takes too long and the caller hears silence. `bin/start.sh` does NOT auto-warm models, so you must warm them after startup.
+
+**Typical first-load times** (Apple M4 Max):
+| Model | First load | Subsequent calls |
+|-------|-----------|-----------------|
+| TTS (Kokoro) | ~2s | ~0.5s |
+| ASR (Parakeet) | ~90s | ~0.5s |
+| LLM (Qwen) | auto-warmed at startup | ~0.3s |
 
 ```bash
-# Warm TTS (Kokoro)
+# Warm TTS (Kokoro) — fast, do this first
 curl -s -X POST http://127.0.0.1:8765/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"mlx-community/Kokoro-82M-bf16","input":"Warm up.","voice":"af_heart","speed":1.2,"response_format":"wav"}' \
   -o /dev/null
 
-# Warm ASR (Parakeet) — needs a WAV file
-python3 -c "
-import wave, tempfile
+# Warm ASR (Parakeet) — slow (~90s), run in background
+(python3 -c "
+import wave, tempfile, os
+os.makedirs('tmp', exist_ok=True)
 with tempfile.NamedTemporaryFile(suffix='.wav', delete=False, dir='tmp') as f:
     w = wave.open(f, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
     w.writeframes(b'\x00\x00' * 16000); w.close(); print(f.name)
 " | xargs -I{} curl -s -X POST http://127.0.0.1:8765/v1/audio/transcriptions \
-  -F "file=@{}" -F "model=mlx-community/parakeet-tdt-0.6b-v2" -F "language=en" -o /dev/null
+  -F "file=@{}" -F "model=mlx-community/parakeet-tdt-0.6b-v2" -F "language=en" -o /dev/null) &
+echo "ASR warming in background (~90s)..."
 ```
 
-The LLM is automatically pre-warmed at gateway startup when running in local MLX mode (i.e. `llm_base_url` is empty).
+The LLM is automatically pre-warmed at gateway startup when running in local MLX mode (i.e. `llm_base_url` is empty). Calls will work for greetings and forced replies immediately after TTS warmup; ASR warmup is only needed before the first real voice turn.
 
 ## Phone Connection
 
