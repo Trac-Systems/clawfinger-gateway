@@ -161,6 +161,80 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
     </div>
   </div>
 
+  <!-- Call Policy -->
+  <div class="panel">
+    <div class="panel-head">Call Policy</div>
+    <div class="panel-body">
+      <div class="row" style="margin-top:0">
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="cp-auto-answer" style="width:auto"> Auto-answer incoming calls
+        </label>
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Answer delay: <span id="cp-delay-val">500</span>ms</label>
+        <input type="range" id="cp-delay" min="0" max="5000" step="100" value="500" oninput="document.getElementById('cp-delay-val').textContent=this.value">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Caller allowlist <span style="font-size:11px">(comma-separated, empty = allow all)</span>:</label>
+        <input id="cp-allowlist" placeholder="+491701234567, +491709876543">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Caller blocklist <span style="font-size:11px">(comma-separated)</span>:</label>
+        <input id="cp-blocklist" placeholder="+49123spam">
+      </div>
+      <div class="row">
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="cp-unknown" style="width:auto"> Allow unknown/hidden caller ID
+        </label>
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Incoming greeting:</label>
+        <textarea id="cp-greeting-in" rows="2" placeholder="Hello, I am {owner}'s assistant..."></textarea>
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Outgoing greeting:</label>
+        <textarea id="cp-greeting-out" rows="2" placeholder="Hello, this is {owner}'s assistant calling."></textarea>
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Owner name:</label>
+        <input id="cp-owner" placeholder="Markus">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Max duration (sec):</label>
+        <input type="number" id="cp-max-dur" min="0" max="7200" value="300" style="width:100px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Duration message:</label>
+        <textarea id="cp-max-dur-msg" rows="2"></textarea>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="applyCallPolicy()">Apply</button>
+        <span id="cp-feedback" style="font-size:11px"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Security -->
+  <div class="panel">
+    <div class="panel-head">Security</div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Voice passphrase <span style="font-size:11px">(empty = disabled)</span>:</label>
+      <input type="password" id="sec-passphrase" placeholder="Enter passphrase...">
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Rejection message:</label>
+        <textarea id="sec-reject-msg" rows="2"></textarea>
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Max attempts <span style="font-size:11px">(0 = unlimited)</span>:</label>
+        <input type="number" id="sec-max-attempts" min="0" max="99" value="3" style="width:80px">
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="applySecurity()">Apply</button>
+        <span id="sec-feedback" style="font-size:11px"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- LLM Settings -->
   <div class="panel">
     <div class="panel-head">LLM Settings <span id="llm-restart-badge" class="badge" style="display:none;background:rgba(210,153,34,0.2);color:var(--yellow)">restart required</span></div>
@@ -276,6 +350,14 @@ function handleEvent(evt) {
     addMonitorLine(`[inject] ${d.text}`, 'assistant');
   } else if (t === 'config.llm_updated') {
     loadLlmConfig();
+  } else if (t === 'config.call_updated') {
+    loadCallConfig();
+  } else if (t === 'turn.caller_rejected') {
+    addMonitorLine(`[rejected] ${d.number || 'unknown'}: ${d.reason}`, 'meta');
+  } else if (t === 'turn.authenticated') {
+    addMonitorLine(`[auth] Session authenticated`, 'meta');
+  } else if (t === 'turn.auth_failed') {
+    addMonitorLine(`[auth] Failed attempt #${d.attempt}`, 'meta');
   } else if (t === 'instructions.updated') {
     loadInstructions();
   } else if (t === 'call.dial') {
@@ -492,6 +574,83 @@ function formatDuration(s) {
   return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
 }
 
+// --- Call Policy ---
+async function loadCallConfig() {
+  try {
+    const r = await fetch(`${BASE}/api/config/call`);
+    const c = await r.json();
+    document.getElementById('cp-auto-answer').checked = c.auto_answer;
+    const delayEl = document.getElementById('cp-delay');
+    delayEl.value = c.auto_answer_delay_ms; document.getElementById('cp-delay-val').textContent = c.auto_answer_delay_ms;
+    document.getElementById('cp-allowlist').value = (c.caller_allowlist || []).join(', ');
+    document.getElementById('cp-blocklist').value = (c.caller_blocklist || []).join(', ');
+    document.getElementById('cp-unknown').checked = c.unknown_callers_allowed;
+    document.getElementById('cp-greeting-in').value = c.greeting_incoming_template || c.greeting_incoming || '';
+    document.getElementById('cp-greeting-out').value = c.greeting_outgoing_template || c.greeting_outgoing || '';
+    document.getElementById('cp-owner').value = c.greeting_owner || '';
+    document.getElementById('cp-max-dur').value = c.max_duration_sec;
+    document.getElementById('cp-max-dur-msg').value = c.max_duration_message || '';
+    // Security panel
+    document.getElementById('sec-reject-msg').value = c.auth_reject_message || '';
+    document.getElementById('sec-max-attempts').value = c.auth_max_attempts;
+    // Don't overwrite passphrase field — it's a password input
+  } catch(e) {}
+}
+
+async function applyCallPolicy() {
+  const fb = document.getElementById('cp-feedback');
+  const alRaw = document.getElementById('cp-allowlist').value.trim();
+  const blRaw = document.getElementById('cp-blocklist').value.trim();
+  const body = {
+    call_auto_answer: document.getElementById('cp-auto-answer').checked,
+    call_auto_answer_delay_ms: parseInt(document.getElementById('cp-delay').value, 10),
+    caller_allowlist: alRaw ? alRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
+    caller_blocklist: blRaw ? blRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
+    unknown_callers_allowed: document.getElementById('cp-unknown').checked,
+    greeting_incoming: document.getElementById('cp-greeting-in').value,
+    greeting_outgoing: document.getElementById('cp-greeting-out').value,
+    greeting_owner: document.getElementById('cp-owner').value.trim(),
+    max_duration_sec: parseInt(document.getElementById('cp-max-dur').value, 10),
+    max_duration_message: document.getElementById('cp-max-dur-msg').value,
+  };
+  try {
+    const r = await fetch(`${BASE}/api/config/call`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    fb.style.color = 'var(--green)';
+    fb.textContent = j.ok ? 'Applied' : 'Error';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Failed';
+  }
+}
+
+async function applySecurity() {
+  const fb = document.getElementById('sec-feedback');
+  const body = {
+    auth_passphrase: document.getElementById('sec-passphrase').value,
+    auth_reject_message: document.getElementById('sec-reject-msg').value,
+    auth_max_attempts: parseInt(document.getElementById('sec-max-attempts').value, 10),
+  };
+  try {
+    const r = await fetch(`${BASE}/api/config/call`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    fb.style.color = 'var(--green)';
+    fb.textContent = j.ok ? 'Applied' : 'Error';
+    document.getElementById('sec-passphrase').value = '';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Failed';
+  }
+}
+
 // --- LLM Settings ---
 async function loadLlmConfig() {
   try {
@@ -547,6 +706,7 @@ connectWS();
 loadStatus();
 loadSessions();
 loadInstructions();
+loadCallConfig();
 loadLlmConfig();
 setInterval(loadStatus, 30000);
 </script>

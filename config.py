@@ -62,6 +62,21 @@ def _migrate(cfg: dict[str, Any]) -> None:
     cfg.setdefault("llm_repeat_penalty", 1.0)
     cfg.setdefault("llm_stop", [])
 
+    # Call policy defaults
+    cfg.setdefault("call_auto_answer", True)
+    cfg.setdefault("call_auto_answer_delay_ms", 500)
+    cfg.setdefault("caller_allowlist", [])
+    cfg.setdefault("caller_blocklist", [])
+    cfg.setdefault("unknown_callers_allowed", True)
+    cfg.setdefault("greeting_incoming", "Hello, I am {owner}'s assistant. Please wait for the beep before speaking.")
+    cfg.setdefault("greeting_outgoing", "Hello, this is {owner}'s assistant calling.")
+    cfg.setdefault("greeting_owner", "the owner")
+    cfg.setdefault("max_duration_sec", 300)
+    cfg.setdefault("max_duration_message", "I'm sorry, but we have reached the maximum call duration. Goodbye!")
+    cfg.setdefault("auth_passphrase", "")
+    cfg.setdefault("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
+    cfg.setdefault("auth_max_attempts", 3)
+
 
 def load() -> dict[str, Any]:
     global _LOADED

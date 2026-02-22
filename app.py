@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import tempfile
 import time
 import uuid
@@ -106,6 +107,8 @@ async def api_turn(
     transcript_hint: str = Form(""),
     skip_asr: str = Form(""),
     forced_reply: str = Form(""),
+    caller_number: str = Form(""),
+    call_direction: str = Form(""),
 ) -> JSONResponse:
     global _CALL_COUNT, _ERROR_COUNT
     _check_bearer(request)
@@ -116,6 +119,48 @@ async def api_turn(
     if reset_session.lower() == "true":
         session_store.reset(sid)
         sid = session_store.get_or_create(sid)
+
+    cfg = config.load()
+
+    # --- Caller info ---
+    caller_number_clean = voice_pipeline.safe_text(caller_number)
+    call_direction_clean = voice_pipeline.safe_text(call_direction)
+    if caller_number_clean:
+        session_store.set_caller_info(sid, caller_number_clean, call_direction_clean)
+
+    # --- Caller filtering ---
+    normalized = re.sub(r"[\s\-\(\)]", "", caller_number_clean)
+    blocklist = cfg.get("caller_blocklist", [])
+    if normalized and normalized in blocklist:
+        await bus.publish("turn.caller_rejected", {"number": normalized, "reason": "blocklisted"}, session_id=sid)
+        reject_text = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
+        audio_bytes, _ = await asyncio.to_thread(voice_pipeline.synthesize, reject_text)
+        return JSONResponse({
+            "ok": False, "rejected": True, "reason": "blocklisted",
+            "session_id": sid, "reply": reject_text,
+            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        })
+
+    allowlist = cfg.get("caller_allowlist", [])
+    if allowlist and normalized and normalized not in allowlist:
+        await bus.publish("turn.caller_rejected", {"number": normalized, "reason": "not_allowlisted"}, session_id=sid)
+        reject_text = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
+        audio_bytes, _ = await asyncio.to_thread(voice_pipeline.synthesize, reject_text)
+        return JSONResponse({
+            "ok": False, "rejected": True, "reason": "not_allowlisted",
+            "session_id": sid, "reply": reject_text,
+            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        })
+
+    if not normalized and not cfg.get("unknown_callers_allowed", True):
+        await bus.publish("turn.caller_rejected", {"number": "", "reason": "unknown_caller"}, session_id=sid)
+        reject_text = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
+        audio_bytes, _ = await asyncio.to_thread(voice_pipeline.synthesize, reject_text)
+        return JSONResponse({
+            "ok": False, "rejected": True, "reason": "unknown_caller",
+            "session_id": sid, "reply": reject_text,
+            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        })
 
     start = time.perf_counter()
     _CALL_COUNT += 1
@@ -163,6 +208,61 @@ async def api_turn(
                     transcript = hint
 
             await bus.publish("turn.transcript", {"transcript": transcript}, session_id=sid)
+
+            # --- Passphrase auth gate ---
+            passphrase = cfg.get("auth_passphrase", "")
+            if passphrase and transcript and not session_store.is_authenticated(sid):
+                # Fuzzy match: case-insensitive, strip punctuation, substring
+                clean_phrase = re.sub(r"[^\w\s]", "", passphrase.lower()).strip()
+                clean_input = re.sub(r"[^\w\s]", "", transcript.lower()).strip()
+                if clean_phrase in clean_input:
+                    session_store.mark_authenticated(sid)
+                    reply = "Authentication successful. How can I help you?"
+                    llm_ms = 0.0
+                    await bus.publish("turn.authenticated", {"session_id": sid}, session_id=sid)
+                else:
+                    attempts = session_store.record_auth_attempt(sid)
+                    max_attempts = cfg.get("auth_max_attempts", 3)
+                    await bus.publish("turn.auth_failed", {"session_id": sid, "attempt": attempts}, session_id=sid)
+                    if max_attempts > 0 and attempts >= max_attempts:
+                        reply = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
+                        llm_ms = 0.0
+                        # Skip LLM, go to TTS, include hangup
+                        await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
+                        audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, reply)
+                        total_ms = (time.perf_counter() - start) * 1000
+                        metrics = {"asr_ms": round(asr_ms, 1), "llm_ms": 0.0, "tts_ms": round(tts_ms, 1),
+                                   "total_ms": round(total_ms, 1), "llm_model": ""}
+                        session_store.record_turn(sid, {"transcript": transcript, "reply": reply,
+                                                        "metrics": metrics, "forced_reply": False})
+                        session_store.save_session(sid)
+                        await bus.publish("turn.complete", {"metrics": metrics, "transcript": transcript,
+                                                            "reply": reply, "session_id": sid}, session_id=sid)
+                        return JSONResponse({
+                            "ok": True, "session_id": sid, "transcript": transcript, "reply": reply,
+                            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+                            "metrics": metrics, "hangup": True,
+                        })
+                    else:
+                        reply = "That's not correct. Please try again."
+                        llm_ms = 0.0
+
+                # Auth handled — skip LLM, go to TTS
+                await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
+                audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, reply)
+                total_ms = (time.perf_counter() - start) * 1000
+                metrics = {"asr_ms": round(asr_ms, 1), "llm_ms": 0.0, "tts_ms": round(tts_ms, 1),
+                           "total_ms": round(total_ms, 1), "llm_model": ""}
+                session_store.record_turn(sid, {"transcript": transcript, "reply": reply,
+                                                "metrics": metrics, "forced_reply": False})
+                session_store.save_session(sid)
+                await bus.publish("turn.complete", {"metrics": metrics, "transcript": transcript,
+                                                    "reply": reply, "session_id": sid}, session_id=sid)
+                return JSONResponse({
+                    "ok": True, "session_id": sid, "transcript": transcript, "reply": reply,
+                    "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "metrics": metrics,
+                })
 
             # --- LLM ---
             if not transcript:
@@ -452,6 +552,14 @@ async def agent_ws(ws: WebSocket) -> None:
                 await ws.send_json({"type": "set_instructions.ack", "ok": True, "scope": scope})
                 await bus.publish("instructions.updated", {"scope": scope, "session_id": sid})
 
+            elif msg_type == "set_call_config":
+                cfg = config.load()
+                for key, value in msg.get("config", {}).items():
+                    if key in AGENT_ALLOWED_CALL_KEYS:
+                        cfg[key] = value
+                await ws.send_json({"type": "set_call_config.ack", "ok": True})
+                await bus.publish("config.call_updated", _call_config_response())
+
             elif msg_type == "dial":
                 number = str(msg.get("number", ""))
                 result = await _do_dial(number)
@@ -578,6 +686,67 @@ async def update_llm_config(request: Request) -> JSONResponse:
 
     await bus.publish("config.llm_updated", _llm_config_response())
     return JSONResponse({"ok": True, **_llm_config_response()})
+
+
+# ---------------------------------------------------------------------------
+# Call config endpoints
+# ---------------------------------------------------------------------------
+
+_CALL_CONFIG_KEYS = {
+    "call_auto_answer", "call_auto_answer_delay_ms",
+    "caller_allowlist", "caller_blocklist", "unknown_callers_allowed",
+    "greeting_incoming", "greeting_outgoing", "greeting_owner",
+    "max_duration_sec", "max_duration_message",
+    "auth_passphrase", "auth_reject_message", "auth_max_attempts",
+}
+
+# Keys agents are NOT allowed to set via WebSocket
+_CALL_SECURITY_KEYS = {
+    "auth_passphrase", "auth_reject_message", "auth_max_attempts",
+    "caller_allowlist", "caller_blocklist", "unknown_callers_allowed",
+}
+
+AGENT_ALLOWED_CALL_KEYS = _CALL_CONFIG_KEYS - _CALL_SECURITY_KEYS
+
+
+def _call_config_response() -> dict:
+    cfg = config.load()
+    owner = cfg.get("greeting_owner", "the owner")
+    greeting_in = cfg.get("greeting_incoming", "")
+    greeting_out = cfg.get("greeting_outgoing", "")
+    return {
+        "auto_answer": cfg.get("call_auto_answer", True),
+        "auto_answer_delay_ms": cfg.get("call_auto_answer_delay_ms", 500),
+        "caller_allowlist": cfg.get("caller_allowlist", []),
+        "caller_blocklist": cfg.get("caller_blocklist", []),
+        "unknown_callers_allowed": cfg.get("unknown_callers_allowed", True),
+        "greeting_incoming": greeting_in.replace("{owner}", owner),
+        "greeting_outgoing": greeting_out.replace("{owner}", owner),
+        "greeting_incoming_template": greeting_in,
+        "greeting_outgoing_template": greeting_out,
+        "greeting_owner": owner,
+        "max_duration_sec": cfg.get("max_duration_sec", 300),
+        "max_duration_message": cfg.get("max_duration_message", ""),
+        "auth_required": bool(cfg.get("auth_passphrase", "")),
+        "auth_reject_message": cfg.get("auth_reject_message", ""),
+        "auth_max_attempts": cfg.get("auth_max_attempts", 3),
+    }
+
+
+@app.get("/api/config/call")
+async def get_call_config() -> JSONResponse:
+    return JSONResponse(_call_config_response())
+
+
+@app.post("/api/config/call")
+async def update_call_config(request: Request) -> JSONResponse:
+    body = await request.json()
+    cfg = config.load()
+    for key, value in body.items():
+        if key in _CALL_CONFIG_KEYS:
+            cfg[key] = value
+    await bus.publish("config.call_updated", _call_config_response())
+    return JSONResponse({"ok": True, **_call_config_response()})
 
 
 # ---------------------------------------------------------------------------

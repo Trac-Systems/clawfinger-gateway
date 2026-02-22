@@ -19,6 +19,12 @@ _HISTORY: dict[str, list[dict[str, str]]] = {}
 # Session metadata for control center: {session_id: {...}}
 _META: dict[str, dict[str, Any]] = {}
 
+# Caller info per session: {session_id: {"number": str, "direction": str}}
+_CALLER_INFO: dict[str, dict[str, str]] = {}
+
+# Passphrase auth state: {session_id: {"validated": bool, "attempts": int}}
+_AUTH_STATE: dict[str, dict[str, Any]] = {}
+
 
 def get_or_create(session_id: str | None = None) -> str:
     if not session_id:
@@ -36,6 +42,8 @@ def get_or_create(session_id: str | None = None) -> str:
 def reset(session_id: str) -> str:
     _HISTORY.pop(session_id, None)
     _META.pop(session_id, None)
+    _CALLER_INFO.pop(session_id, None)
+    _AUTH_STATE.pop(session_id, None)
     return get_or_create(session_id)
 
 
@@ -108,3 +116,40 @@ def get_session_detail(session_id: str) -> dict[str, Any] | None:
 def active_sessions() -> dict[str, dict[str, Any]]:
     """Return all current in-memory session metadata."""
     return dict(_META)
+
+
+# ---------------------------------------------------------------------------
+# Caller info
+# ---------------------------------------------------------------------------
+
+def set_caller_info(session_id: str, number: str, direction: str) -> None:
+    _CALLER_INFO[session_id] = {"number": number, "direction": direction}
+
+
+def get_caller_info(session_id: str) -> dict[str, str]:
+    return _CALLER_INFO.get(session_id, {"number": "", "direction": ""})
+
+
+# ---------------------------------------------------------------------------
+# Passphrase auth state
+# ---------------------------------------------------------------------------
+
+def is_authenticated(session_id: str) -> bool:
+    state = _AUTH_STATE.get(session_id)
+    return state is not None and state.get("validated", False)
+
+
+def mark_authenticated(session_id: str) -> None:
+    _AUTH_STATE.setdefault(session_id, {"validated": False, "attempts": 0})
+    _AUTH_STATE[session_id]["validated"] = True
+
+
+def record_auth_attempt(session_id: str) -> int:
+    """Record a failed passphrase attempt. Returns total attempt count."""
+    state = _AUTH_STATE.setdefault(session_id, {"validated": False, "attempts": 0})
+    state["attempts"] += 1
+    return state["attempts"]
+
+
+def clear_auth_state(session_id: str) -> None:
+    _AUTH_STATE.pop(session_id, None)
