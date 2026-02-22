@@ -1,0 +1,20 @@
+{
+  "host": "127.0.0.1",
+  "port": 8996,
+  "bearer_token": "CHANGE_ME",
+  "mlx_audio_base": "http://127.0.0.1:8765",
+  "stt_model": "mlx-community/parakeet-tdt-0.6b-v2",
+  "stt_language": "en",
+  "tts_model": "mlx-community/Kokoro-82M-bf16",
+  "tts_voice": "af_heart",
+  "tts_speed": 1.2,
+  "llm_backend": "mlx_local",
+  "llm_local_model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+  "llm_remote_base_url": "",
+  "llm_remote_api_key": "",
+  "llm_remote_model": "",
+  "llm_max_tokens": 400,
+  "llm_temperature": 0.2,
+  "llm_system_prompt": "You are a concise, friendly real-time voice assistant. Respond in plain English with 2-3 short sentences and no markdown.",
+  "max_history_turns": 8
+}

@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gateway Control Center</title>
+<style>
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+  --fg: #c9d1d9; --fg2: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  --border: #30363d; --radius: 8px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+  background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.5; }
+a { color: var(--accent); text-decoration: none; }
+
+.header { background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header .status { display: flex; gap: 12px; margin-left: auto; font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+.dot.ok { background: var(--green); }
+.dot.err { background: var(--red); }
+.dot.warn { background: var(--yellow); }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px;
+  max-width: 1400px; margin: 0 auto; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+.panel { background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; }
+.panel-head { padding: 10px 16px; background: var(--bg3);
+  border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px;
+  display: flex; align-items: center; justify-content: space-between; }
+.panel-body { padding: 16px; max-height: 400px; overflow-y: auto; }
+
+.metric { display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg3); padding: 4px 10px; border-radius: 4px; font-size: 12px; margin: 2px; }
+.metric .val { color: var(--accent); font-weight: 600; }
+
+.turn { border-bottom: 1px solid var(--border); padding: 8px 0; }
+.turn:last-child { border-bottom: none; }
+.turn .caller { color: var(--yellow); font-size: 12px; }
+.turn .assistant { color: var(--green); font-size: 12px; }
+.turn .meta { color: var(--fg2); font-size: 11px; margin-top: 2px; }
+.turn .bars { display: flex; gap: 4px; margin-top: 4px; }
+.bar { height: 6px; border-radius: 3px; min-width: 4px; }
+.bar.asr { background: var(--yellow); }
+.bar.llm { background: var(--accent); }
+.bar.tts { background: var(--green); }
+
+input, textarea, select { background: var(--bg3); border: 1px solid var(--border);
+  color: var(--fg); padding: 6px 10px; border-radius: 4px; font-size: 13px;
+  font-family: inherit; width: 100%; }
+textarea { resize: vertical; min-height: 60px; }
+button { background: var(--accent); color: #fff; border: none; padding: 6px 16px;
+  border-radius: 4px; cursor: pointer; font-size: 13px; font-family: inherit; }
+button:hover { opacity: 0.85; }
+button.danger { background: var(--red); }
+button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); }
+
+.row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+.session-item { padding: 8px; border-bottom: 1px solid var(--border); cursor: pointer;
+  font-size: 12px; }
+.session-item:hover { background: var(--bg3); }
+
+.config-table { width: 100%; font-size: 12px; }
+.config-table td { padding: 3px 8px; border-bottom: 1px solid var(--border); }
+.config-table td:first-child { color: var(--fg2); white-space: nowrap; width: 40%; }
+
+.empty { color: var(--fg2); font-style: italic; font-size: 13px; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+.badge.connected { background: rgba(63, 185, 80, 0.2); color: var(--green); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Gateway Control Center</h1>
+  <div class="status">
+    <span><span class="dot" id="dot-ws"></span>WS</span>
+    <span><span class="dot" id="dot-mlx"></span>MLX Audio</span>
+    <span><span class="dot" id="dot-llm"></span>LLM</span>
+    <span id="uptime"></span>
+  </div>
+</div>
+
+<div class="grid">
+  <!-- Live Monitor -->
+  <div class="panel">
+    <div class="panel-head">Live Monitor <span id="turn-count" class="badge connected">0 turns</span></div>
+    <div class="panel-body" id="live-monitor">
+      <div class="empty">Waiting for calls...</div>
+    </div>
+  </div>
+
+  <!-- Call Control -->
+  <div class="panel">
+    <div class="panel-head">Call Control</div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Dial outbound call:</label>
+      <div class="row" style="margin-top:4px">
+        <input id="dial-number" placeholder="+49170..." style="flex:1">
+        <button onclick="doDial()">Dial</button>
+      </div>
+      <div id="dial-feedback" style="font-size:11px;margin-top:4px"></div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Inject TTS message:</label>
+      <textarea id="inject-text" placeholder="Type text to speak into active call..."></textarea>
+      <div class="row">
+        <input id="inject-sid" placeholder="session_id (optional)" style="flex:1">
+        <button onclick="doInject()">Inject</button>
+      </div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Force reply (skip ASR+LLM):</label>
+      <textarea id="force-text" placeholder="Text to TTS directly..."></textarea>
+      <div class="row">
+        <button onclick="doForceReply()">Force Reply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Instructions -->
+  <div class="panel">
+    <div class="panel-head">Instructions</div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Base instruction (used for all turns):</label>
+      <textarea id="instr-base" rows="4" placeholder="Loading..."></textarea>
+      <div class="row">
+        <button onclick="saveInstructions()">Save</button>
+        <button class="secondary" onclick="resetInstructions()">Reset to default</button>
+      </div>
+      <div id="instr-feedback" style="font-size:11px;margin-top:4px"></div>
+    </div>
+  </div>
+
+  <!-- Session Log -->
+  <div class="panel">
+    <div class="panel-head">Session Log <button class="secondary" onclick="loadSessions()" style="font-size:11px;padding:2px 8px">Refresh</button></div>
+    <div class="panel-body" id="session-log">
+      <div class="empty">No sessions yet</div>
+    </div>
+  </div>
+
+  <!-- Agent Panel -->
+  <div class="panel">
+    <div class="panel-head">Agent Panel</div>
+    <div class="panel-body">
+      <div id="agent-list"><div class="empty">No agents connected</div></div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Agent simulation:</label>
+      <textarea id="agent-msg" placeholder='{"type":"inject","text":"Hello","session_id":"..."}'></textarea>
+      <div class="row">
+        <button class="secondary" onclick="connectAgentSim()">Connect as Agent</button>
+        <button onclick="sendAgentMsg()">Send</button>
+        <span id="agent-sim-status" style="font-size:11px;color:var(--fg2)"></span>
+      </div>
+      <div id="agent-events" style="margin-top:8px;max-height:150px;overflow-y:auto;font-size:11px;color:var(--fg2)"></div>
+    </div>
+  </div>
+
+  <!-- System Status -->
+  <div class="panel" style="grid-column: 1 / -1">
+    <div class="panel-head">System Status <button class="secondary" onclick="loadStatus()" style="font-size:11px;padding:2px 8px">Refresh</button></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div id="status-metrics" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;color:var(--fg2);font-size:12px">Configuration</summary>
+        <table class="config-table" id="config-table" style="margin-top:8px"></table>
+      </details>
+    </div>
+  </div>
+</div>
+
+<!-- Session Detail Modal -->
+<div id="modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:100;padding:40px;overflow-y:auto" onclick="if(event.target===this)this.style.display='none'">
+  <div style="max-width:700px;margin:0 auto;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 id="modal-title" style="font-size:16px"></h3>
+      <button class="secondary" onclick="document.getElementById('modal').style.display='none'" style="padding:2px 10px">X</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const BASE = location.origin;
+let ws = null;
+let turnCounter = 0;
+let agentWs = null;
+
+// --- WebSocket connection ---
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/events`);
+  ws.onopen = () => { document.getElementById('dot-ws').className = 'dot ok'; };
+  ws.onclose = () => {
+    document.getElementById('dot-ws').className = 'dot err';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => { document.getElementById('dot-ws').className = 'dot err'; };
+  ws.onmessage = (e) => {
+    try { handleEvent(JSON.parse(e.data)); } catch(err) { console.error(err); }
+  };
+  // Keepalive
+  setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:'ping'})); }, 25000);
+}
+
+function handleEvent(evt) {
+  const t = evt.type;
+  const d = evt.data || {};
+  const sid = evt.session_id || '';
+
+  if (t === 'turn.started') {
+    turnCounter++;
+    document.getElementById('turn-count').textContent = turnCounter + ' turns';
+    addMonitorLine(`[${sid.slice(0,8)}] Turn started...`, 'meta');
+  } else if (t === 'turn.transcript') {
+    addMonitorLine(`Caller: ${d.transcript || '(empty)'}`, 'caller');
+  } else if (t === 'turn.reply') {
+    addMonitorLine(`Assistant: ${d.reply || '(empty)'}`, 'assistant');
+  } else if (t === 'turn.complete') {
+    const m = d.metrics || {};
+    addMonitorBars(m);
+  } else if (t === 'turn.error') {
+    addMonitorLine(`Error: ${d.error}`, 'meta');
+  } else if (t === 'agent.connected' || t === 'agent.disconnected') {
+    loadStatus();
+  } else if (t === 'agent.inject') {
+    addMonitorLine(`[inject] ${d.text}`, 'assistant');
+  } else if (t === 'instructions.updated') {
+    loadInstructions();
+  } else if (t === 'call.dial') {
+    addMonitorLine(`[dial] ${d.number}`, 'meta');
+  }
+}
+
+function addMonitorLine(text, cls) {
+  const el = document.getElementById('live-monitor');
+  if (el.querySelector('.empty')) el.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'turn';
+  div.innerHTML = `<div class="${cls}">${esc(text)}</div><div class="meta">${new Date().toLocaleTimeString()}</div>`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function addMonitorBars(m) {
+  const el = document.getElementById('live-monitor');
+  const total = (m.asr_ms||0) + (m.llm_ms||0) + (m.tts_ms||0) || 1;
+  const div = document.createElement('div');
+  div.className = 'turn';
+  div.innerHTML = `<div class="bars">
+    <div class="bar asr" style="width:${Math.max(4, (m.asr_ms||0)/total*200)}px" title="ASR ${Math.round(m.asr_ms||0)}ms"></div>
+    <div class="bar llm" style="width:${Math.max(4, (m.llm_ms||0)/total*200)}px" title="LLM ${Math.round(m.llm_ms||0)}ms"></div>
+    <div class="bar tts" style="width:${Math.max(4, (m.tts_ms||0)/total*200)}px" title="TTS ${Math.round(m.tts_ms||0)}ms"></div>
+  </div>
+  <div class="meta">ASR ${Math.round(m.asr_ms||0)}ms | LLM ${Math.round(m.llm_ms||0)}ms | TTS ${Math.round(m.tts_ms||0)}ms | Total ${Math.round(m.total_ms||0)}ms</div>`;
+  document.getElementById('live-monitor').appendChild(div);
+}
+
+// --- Actions ---
+async function doInject() {
+  const text = document.getElementById('inject-text').value.trim();
+  const sid = document.getElementById('inject-sid').value.trim();
+  if (!text) return;
+  await fetch(`${BASE}/api/call/inject`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({text, session_id: sid})
+  });
+  document.getElementById('inject-text').value = '';
+}
+
+async function doForceReply() {
+  const text = document.getElementById('force-text').value.trim();
+  if (!text) return;
+  const form = new FormData();
+  form.append('forced_reply', text);
+  form.append('audio', new Blob([new ArrayBuffer(44)], {type:'audio/wav'}), 'silence.wav');
+  const r = await fetch(`${BASE}/api/turn`, {method:'POST', body: form});
+  const j = await r.json();
+  if (j.ok) addMonitorLine(`[force] ${j.reply}`, 'assistant');
+  document.getElementById('force-text').value = '';
+}
+
+// --- Sessions ---
+async function loadSessions() {
+  const r = await fetch(`${BASE}/api/sessions`);
+  const sessions = await r.json();
+  const el = document.getElementById('session-log');
+  if (!sessions.length) { el.innerHTML = '<div class="empty">No sessions yet</div>'; return; }
+  el.innerHTML = sessions.map(s => `<div class="session-item" onclick="showSession('${s.session_id}')">
+    <strong>${s.session_id.slice(0,12)}...</strong> &mdash; ${s.turn_count} turns
+    <span style="float:right;color:var(--fg2)">${s.created_at ? new Date(s.created_at*1000).toLocaleString() : ''}</span>
+  </div>`).join('');
+}
+
+async function showSession(sid) {
+  const r = await fetch(`${BASE}/api/sessions/${sid}`);
+  const data = await r.json();
+  document.getElementById('modal-title').textContent = `Session ${sid.slice(0,12)}...`;
+  const turns = (data.turns || []).map(t => `<div class="turn">
+    <div class="caller">Caller: ${esc(t.transcript || '(forced)')}</div>
+    <div class="assistant">Assistant: ${esc(t.reply)}</div>
+    <div class="meta">${t.metrics ? `ASR ${Math.round(t.metrics.asr_ms||0)}ms | LLM ${Math.round(t.metrics.llm_ms||0)}ms | TTS ${Math.round(t.metrics.tts_ms||0)}ms` : ''}</div>
+  </div>`).join('');
+  document.getElementById('modal-body').innerHTML = turns || '<div class="empty">No turns</div>';
+  document.getElementById('modal').style.display = 'block';
+}
+
+// --- Status ---
+async function loadStatus() {
+  try {
+    const r = await fetch(`${BASE}/api/status`);
+    const s = await r.json();
+
+    document.getElementById('dot-mlx').className = 'dot ' + (s.mlx_audio?.ok ? 'ok' : 'err');
+    const llmOk = s.llm?.loaded || s.llm?.configured;
+    document.getElementById('dot-llm').className = 'dot ' + (llmOk ? 'ok' : 'warn');
+    document.getElementById('uptime').textContent = formatDuration(s.uptime_s || 0);
+
+    document.getElementById('status-metrics').innerHTML = [
+      `<div class="metric">Uptime <span class="val">${formatDuration(s.uptime_s||0)}</span></div>`,
+      `<div class="metric">Calls <span class="val">${s.total_calls||0}</span></div>`,
+      `<div class="metric">Errors <span class="val">${s.error_count||0}</span></div>`,
+      `<div class="metric">Sessions <span class="val">${s.active_sessions||0}</span></div>`,
+      `<div class="metric">UI clients <span class="val">${s.ui_subscribers||0}</span></div>`,
+      `<div class="metric">Agents <span class="val">${(s.agents||[]).length}</span></div>`,
+      `<div class="metric">LLM <span class="val">${s.llm?.model || s.llm?.backend || '?'}</span></div>`,
+    ].join('');
+
+    // Agents
+    const agentEl = document.getElementById('agent-list');
+    if (s.agents && s.agents.length) {
+      agentEl.innerHTML = s.agents.map(a => `<div style="font-size:12px;padding:4px 0">
+        <span class="badge connected">${a.name}</span> connected ${new Date(a.connected_at*1000).toLocaleTimeString()}
+        ${a.takeover_sessions.length ? ' — takeover: ' + a.takeover_sessions.join(', ') : ''}
+      </div>`).join('');
+    } else {
+      agentEl.innerHTML = '<div class="empty">No agents connected</div>';
+    }
+
+    // Config
+    if (s.config) {
+      document.getElementById('config-table').innerHTML = Object.entries(s.config)
+        .map(([k,v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join('');
+    }
+  } catch(e) {
+    document.getElementById('dot-mlx').className = 'dot err';
+    document.getElementById('dot-llm').className = 'dot err';
+  }
+}
+
+// --- Agent simulation ---
+function connectAgentSim() {
+  if (agentWs && agentWs.readyState <= 1) { agentWs.close(); }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  agentWs = new WebSocket(`${proto}//${location.host}/api/agent/ws`);
+  agentWs.onopen = () => { document.getElementById('agent-sim-status').textContent = 'Connected'; };
+  agentWs.onclose = () => { document.getElementById('agent-sim-status').textContent = 'Disconnected'; };
+  agentWs.onmessage = (e) => {
+    const el = document.getElementById('agent-events');
+    const div = document.createElement('div');
+    div.textContent = new Date().toLocaleTimeString() + ' ' + e.data.slice(0, 200);
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+  };
+}
+
+function sendAgentMsg() {
+  if (!agentWs || agentWs.readyState !== 1) { alert('Connect first'); return; }
+  const raw = document.getElementById('agent-msg').value.trim();
+  if (!raw) return;
+  agentWs.send(raw);
+}
+
+// --- Dial ---
+async function doDial() {
+  const number = document.getElementById('dial-number').value.trim();
+  if (!number) return;
+  const fb = document.getElementById('dial-feedback');
+  fb.style.color = 'var(--fg2)';
+  fb.textContent = 'Dialing...';
+  try {
+    const r = await fetch(`${BASE}/api/call/dial`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({number})
+    });
+    const j = await r.json();
+    fb.style.color = j.ok ? 'var(--green)' : 'var(--red)';
+    fb.textContent = j.ok ? 'Dial sent' : (j.detail || 'Dial failed');
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Request failed';
+  }
+}
+
+// --- Instructions ---
+async function loadInstructions() {
+  try {
+    const r = await fetch(`${BASE}/api/instructions`);
+    const data = await r.json();
+    document.getElementById('instr-base').value = data.base || '';
+  } catch(e) {}
+}
+
+async function saveInstructions() {
+  const text = document.getElementById('instr-base').value;
+  const fb = document.getElementById('instr-feedback');
+  try {
+    const r = await fetch(`${BASE}/api/instructions`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text})
+    });
+    const j = await r.json();
+    fb.style.color = 'var(--green)';
+    fb.textContent = 'Saved';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Save failed';
+  }
+}
+
+async function resetInstructions() {
+  try {
+    await fetch(`${BASE}/api/instructions`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text: ''})
+    });
+    loadInstructions();
+    const fb = document.getElementById('instr-feedback');
+    fb.style.color = 'var(--green)';
+    fb.textContent = 'Reset to default';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {}
+}
+
+// --- Helpers ---
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function formatDuration(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+  return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
+}
+
+// --- Init ---
+connectWS();
+loadStatus();
+loadSessions();
+loadInstructions();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

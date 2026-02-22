@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Models (multi-GB, downloaded via HF)
+.models/
+
+# Runtime data
+sessions/
+tmp/
+logs/
+
+# Config contains bearer tokens and API keys
+config.json
+
+# IDE
+.idea/
+*.swp
+.DS_Store
