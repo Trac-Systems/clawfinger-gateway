@@ -1,3 +1,8 @@
+---
+name: local-voice-gateway
+description: Local voice gateway for Clawfinger. Use this skill when installing, configuring, running, or troubleshooting the FastAPI gateway (ASR/LLM/TTS on Apple Silicon via MLX), its API endpoints, agent WebSocket protocol, instruction system, or control center UI. macOS/Linux only.
+---
+
 # Local Voice Gateway — Installation & Operations Skill
 
 > **Platform**: macOS and Linux only. Not compatible with Windows. Primarily tested on macOS (Apple Silicon).
