@@ -161,6 +161,48 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
     </div>
   </div>
 
+  <!-- LLM Settings -->
+  <div class="panel">
+    <div class="panel-head">LLM Settings <span id="llm-restart-badge" class="badge" style="display:none;background:rgba(210,153,34,0.2);color:var(--yellow)">restart required</span></div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Model:</label>
+      <input id="llm-model" placeholder="mlx-community/Qwen2.5-1.5B-Instruct-4bit">
+      <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">Base URL <span style="font-size:11px">(empty = local MLX)</span>:</label>
+      <input id="llm-base-url" placeholder="https://api.openai.com/v1">
+      <div style="font-size:11px;color:var(--fg2);margin-top:2px">Model/URL changes need gateway restart</div>
+
+      <div style="margin-top:12px">
+        <label style="font-size:12px;color:var(--fg2)">Temperature: <span id="llm-temp-val">0.2</span></label>
+        <input type="range" id="llm-temperature" min="0" max="2" step="0.05" value="0.2" oninput="document.getElementById('llm-temp-val').textContent=this.value">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Top P: <span id="llm-topp-val">1.0</span></label>
+        <input type="range" id="llm-top-p" min="0" max="1" step="0.05" value="1.0" oninput="document.getElementById('llm-topp-val').textContent=this.value">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Top K:</label>
+        <input type="number" id="llm-top-k" min="0" max="500" value="0" style="width:80px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Repeat Penalty: <span id="llm-rp-val">1.0</span></label>
+        <input type="range" id="llm-repeat-penalty" min="1" max="2" step="0.05" value="1.0" oninput="document.getElementById('llm-rp-val').textContent=this.value">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Max Tokens:</label>
+        <input type="number" id="llm-max-tokens" min="1" max="4096" value="400" style="width:80px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Stop sequences <span style="font-size:11px">(comma-separated)</span>:</label>
+        <input id="llm-stop" placeholder="\n\n, User:">
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <button onclick="applyLlmConfig()">Apply</button>
+        <span id="llm-feedback" style="font-size:11px"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- System Status -->
   <div class="panel" style="grid-column: 1 / -1">
     <div class="panel-head">System Status <button class="secondary" onclick="loadStatus()" style="font-size:11px;padding:2px 8px">Refresh</button></div>
@@ -232,6 +274,8 @@ function handleEvent(evt) {
     loadStatus();
   } else if (t === 'agent.inject') {
     addMonitorLine(`[inject] ${d.text}`, 'assistant');
+  } else if (t === 'config.llm_updated') {
+    loadLlmConfig();
   } else if (t === 'instructions.updated') {
     loadInstructions();
   } else if (t === 'call.dial') {
@@ -448,11 +492,62 @@ function formatDuration(s) {
   return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
 }
 
+// --- LLM Settings ---
+async function loadLlmConfig() {
+  try {
+    const r = await fetch(`${BASE}/api/config/llm`);
+    const c = await r.json();
+    document.getElementById('llm-model').value = c.model || '';
+    document.getElementById('llm-base-url').value = c.base_url || '';
+    const tempEl = document.getElementById('llm-temperature');
+    tempEl.value = c.temperature; document.getElementById('llm-temp-val').textContent = c.temperature;
+    const tpEl = document.getElementById('llm-top-p');
+    tpEl.value = c.top_p; document.getElementById('llm-topp-val').textContent = c.top_p;
+    document.getElementById('llm-top-k').value = c.top_k;
+    const rpEl = document.getElementById('llm-repeat-penalty');
+    rpEl.value = c.repeat_penalty; document.getElementById('llm-rp-val').textContent = c.repeat_penalty;
+    document.getElementById('llm-max-tokens').value = c.max_tokens;
+    document.getElementById('llm-stop').value = (c.stop || []).join(', ');
+    document.getElementById('llm-restart-badge').style.display = c.restart_required ? 'inline' : 'none';
+  } catch(e) {}
+}
+
+async function applyLlmConfig() {
+  const fb = document.getElementById('llm-feedback');
+  const stopRaw = document.getElementById('llm-stop').value.trim();
+  const stop = stopRaw ? stopRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const body = {
+    model: document.getElementById('llm-model').value.trim(),
+    base_url: document.getElementById('llm-base-url').value.trim(),
+    temperature: parseFloat(document.getElementById('llm-temperature').value),
+    top_p: parseFloat(document.getElementById('llm-top-p').value),
+    top_k: parseInt(document.getElementById('llm-top-k').value, 10),
+    repeat_penalty: parseFloat(document.getElementById('llm-repeat-penalty').value),
+    max_tokens: parseInt(document.getElementById('llm-max-tokens').value, 10),
+    stop: stop,
+  };
+  try {
+    const r = await fetch(`${BASE}/api/config/llm`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    fb.style.color = 'var(--green)';
+    fb.textContent = 'Applied';
+    document.getElementById('llm-restart-badge').style.display = j.restart_required ? 'inline' : 'none';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Failed';
+  }
+}
+
 // --- Init ---
 connectWS();
 loadStatus();
 loadSessions();
 loadInstructions();
+loadLlmConfig();
 setInterval(loadStatus, 30000);
 </script>
 </body>

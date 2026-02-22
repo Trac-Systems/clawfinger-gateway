@@ -226,7 +226,12 @@ async def api_turn(
         })
         session_store.save_session(sid)
 
-        await bus.publish("turn.complete", {"metrics": metrics}, session_id=sid)
+        await bus.publish("turn.complete", {
+            "metrics": metrics,
+            "transcript": transcript,
+            "reply": reply,
+            "session_id": sid,
+        }, session_id=sid)
 
         return JSONResponse({
             "ok": True,
@@ -454,6 +459,23 @@ async def agent_ws(ws: WebSocket) -> None:
                 if result["ok"]:
                     await bus.publish("call.dial", {"number": number})
 
+            elif msg_type == "get_call_state":
+                sid = str(msg.get("session_id", ""))
+                history = session_store.get_history(sid)
+                meta = session_store.active_sessions().get(sid)
+                await ws.send_json({
+                    "type": "call_state",
+                    "session_id": sid,
+                    "history": history,
+                    "turn_count": len(meta.get("turns", [])) if meta else 0,
+                    "instructions": {
+                        "base": instruction_store.get_base(),
+                        "session": instruction_store.get_session(sid),
+                        "pending_turn": instruction_store.get_turn(sid),
+                    },
+                    "agent_takeover": agent_interface.get_takeover_agent(sid) is not None,
+                })
+
             elif msg_type == "ping":
                 await ws.send_json({"type": "pong"})
 
@@ -494,6 +516,92 @@ async def agent_takeover_rest(request: Request) -> JSONResponse:
 async def agent_release_rest(request: Request) -> JSONResponse:
     """REST release — only works with connected agent WebSocket. Stubbed for now."""
     return JSONResponse({"ok": False, "detail": "Use WebSocket /api/agent/ws for release"})
+
+
+# ---------------------------------------------------------------------------
+# LLM config endpoints
+# ---------------------------------------------------------------------------
+
+_LLM_PARAM_KEYS = {"llm_max_tokens", "llm_temperature", "llm_top_p", "llm_top_k", "llm_repeat_penalty", "llm_stop"}
+_LLM_IDENTITY_KEYS = {"llm_model", "llm_base_url", "llm_api_key"}
+_LLM_RESTART_REQUIRED = False
+
+# Short aliases accepted by POST body → config key
+_LLM_ALIAS = {
+    "model": "llm_model",
+    "base_url": "llm_base_url",
+    "api_key": "llm_api_key",
+    "max_tokens": "llm_max_tokens",
+    "temperature": "llm_temperature",
+    "top_p": "llm_top_p",
+    "top_k": "llm_top_k",
+    "repeat_penalty": "llm_repeat_penalty",
+    "stop": "llm_stop",
+}
+
+
+def _llm_config_response() -> dict:
+    cfg = config.load()
+    return {
+        "model": cfg.get("llm_model", ""),
+        "base_url": cfg.get("llm_base_url", ""),
+        "max_tokens": cfg.get("llm_max_tokens", 400),
+        "temperature": cfg.get("llm_temperature", 0.2),
+        "top_p": cfg.get("llm_top_p", 1.0),
+        "top_k": cfg.get("llm_top_k", 0),
+        "repeat_penalty": cfg.get("llm_repeat_penalty", 1.0),
+        "stop": cfg.get("llm_stop", []),
+        "is_local": not cfg.get("llm_base_url"),
+        "restart_required": _LLM_RESTART_REQUIRED,
+    }
+
+
+@app.get("/api/config/llm")
+async def get_llm_config() -> JSONResponse:
+    return JSONResponse(_llm_config_response())
+
+
+@app.post("/api/config/llm")
+async def update_llm_config(request: Request) -> JSONResponse:
+    global _LLM_RESTART_REQUIRED
+    body = await request.json()
+    cfg = config.load()
+
+    for body_key, value in body.items():
+        cfg_key = _LLM_ALIAS.get(body_key, body_key)
+        if cfg_key in _LLM_PARAM_KEYS:
+            cfg[cfg_key] = value
+        elif cfg_key in _LLM_IDENTITY_KEYS:
+            if cfg.get(cfg_key) != value:
+                cfg[cfg_key] = value
+                _LLM_RESTART_REQUIRED = True
+
+    await bus.publish("config.llm_updated", _llm_config_response())
+    return JSONResponse({"ok": True, **_llm_config_response()})
+
+
+# ---------------------------------------------------------------------------
+# Agent call state endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/agent/call/{sid}")
+async def agent_call_state(sid: str) -> JSONResponse:
+    history = session_store.get_history(sid)
+    meta = session_store.active_sessions().get(sid)
+    instructions = {
+        "base": instruction_store.get_base(),
+        "session": instruction_store.get_session(sid),
+        "pending_turn": instruction_store.get_turn(sid),
+    }
+    has_takeover = agent_interface.get_takeover_agent(sid) is not None
+    return JSONResponse({
+        "session_id": sid,
+        "history": history,
+        "turn_count": len(meta.get("turns", [])) if meta else 0,
+        "instructions": instructions,
+        "agent_takeover": has_takeover,
+        "created_at": meta.get("created_at") if meta else None,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +649,8 @@ async def startup() -> None:
     cfg = config.load()
     print(f"[gateway] Starting on {cfg['host']}:{cfg['port']}")
     print(f"[gateway] mlx_audio: {cfg['mlx_audio_base']}")
-    print(f"[gateway] LLM backend: {cfg['llm_backend']}")
+    backend_type = "local/MLX" if not cfg.get("llm_base_url") else f"remote/{cfg['llm_base_url']}"
+    print(f"[gateway] LLM: {cfg['llm_model']} ({backend_type})")
     llm_backend.preload()
 
 

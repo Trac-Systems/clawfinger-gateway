@@ -19,16 +19,22 @@ except Exception:
 
 _LOCAL_MODEL: Any | None = None
 _LOCAL_TOKENIZER: Any | None = None
+_LOCAL_MODEL_NAME: str = ""
 
 
-def _ensure_local_llm() -> tuple[Any, Any]:
-    global _LOCAL_MODEL, _LOCAL_TOKENIZER
-    if _LOCAL_MODEL is not None and _LOCAL_TOKENIZER is not None:
+def _is_local(cfg: dict[str, Any]) -> bool:
+    return not cfg.get("llm_base_url")
+
+
+def _ensure_local_llm(cfg: dict[str, Any]) -> tuple[Any, Any]:
+    global _LOCAL_MODEL, _LOCAL_TOKENIZER, _LOCAL_MODEL_NAME
+    model_name = cfg.get("llm_model", "")
+    if _LOCAL_MODEL is not None and _LOCAL_TOKENIZER is not None and _LOCAL_MODEL_NAME == model_name:
         return _LOCAL_MODEL, _LOCAL_TOKENIZER
     if mlx_load is None:
         raise RuntimeError("mlx-lm is not available in this environment")
-    cfg = config.load()
-    _LOCAL_MODEL, _LOCAL_TOKENIZER = mlx_load(cfg["llm_local_model"])
+    _LOCAL_MODEL, _LOCAL_TOKENIZER = mlx_load(model_name)
+    _LOCAL_MODEL_NAME = model_name
     return _LOCAL_MODEL, _LOCAL_TOKENIZER
 
 
@@ -43,11 +49,11 @@ def _apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
 def preload() -> None:
     """Preload local MLX model at startup."""
     cfg = config.load()
-    if cfg["llm_backend"] != "mlx_local":
+    if not _is_local(cfg):
         return
     try:
-        _ensure_local_llm()
-        print(f"[gateway] LLM preloaded: {cfg['llm_local_model']}")
+        _ensure_local_llm(cfg)
+        print(f"[gateway] LLM preloaded: {cfg['llm_model']}")
     except Exception as exc:
         print(f"[gateway] LLM preload failed: {exc}")
 
@@ -55,32 +61,38 @@ def preload() -> None:
 def generate(messages: list[dict[str, str]]) -> tuple[str, float, str]:
     """Generate LLM reply. Returns (reply_text, llm_ms, model_name)."""
     cfg = config.load()
-    if cfg["llm_backend"] == "mlx_local":
+    if _is_local(cfg):
         return _generate_local(messages, cfg)
     return _generate_remote(messages, cfg)
 
 
 def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tuple[str, float, str]:
     start = time.perf_counter()
-    model, tokenizer = _ensure_local_llm()
+    model, tokenizer = _ensure_local_llm(cfg)
     prompt = _apply_chat_template(tokenizer, messages)
 
     if mlx_generate is None:
         raise RuntimeError("mlx-lm generate is not available")
 
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "max_tokens": cfg.get("llm_max_tokens", 400),
+        "temp": cfg.get("llm_temperature", 0.2),
+        "verbose": False,
+    }
+    if cfg.get("llm_top_p", 1.0) < 1.0:
+        kwargs["top_p"] = cfg["llm_top_p"]
+    if cfg.get("llm_repeat_penalty", 1.0) != 1.0:
+        kwargs["repetition_penalty"] = cfg["llm_repeat_penalty"]
+
     try:
-        text = mlx_generate(
-            model, tokenizer,
-            prompt=prompt,
-            max_tokens=cfg["llm_max_tokens"],
-            temp=cfg["llm_temperature"],
-            verbose=False,
-        )
+        text = mlx_generate(model, tokenizer, **kwargs)
     except TypeError:
+        # Fallback if mlx_lm version doesn't support extra kwargs
         text = mlx_generate(
             model, tokenizer,
             prompt=prompt,
-            max_tokens=cfg["llm_max_tokens"],
+            max_tokens=cfg.get("llm_max_tokens", 400),
             verbose=False,
         )
 
@@ -88,27 +100,34 @@ def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tupl
     if not text:
         text = "Got it. Please continue."
 
-    return text, (time.perf_counter() - start) * 1000, f"local/{cfg['llm_local_model']}"
+    return text, (time.perf_counter() - start) * 1000, f"local/{cfg['llm_model']}"
 
 
 def _generate_remote(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tuple[str, float, str]:
     start = time.perf_counter()
-    base_url = cfg["llm_remote_base_url"].rstrip("/")
+    base_url = cfg["llm_base_url"].rstrip("/")
     if not base_url:
-        raise RuntimeError("llm_remote_base_url not configured")
+        raise RuntimeError("llm_base_url not configured")
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
-    api_key = cfg.get("llm_remote_api_key", "")
+    api_key = cfg.get("llm_api_key", "")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    payload = {
-        "model": cfg["llm_remote_model"],
+    payload: dict[str, Any] = {
+        "model": cfg["llm_model"],
         "messages": messages,
-        "max_tokens": cfg["llm_max_tokens"],
-        "temperature": cfg["llm_temperature"],
+        "max_tokens": cfg.get("llm_max_tokens", 400),
+        "temperature": cfg.get("llm_temperature", 0.2),
         "stream": False,
     }
+    if cfg.get("llm_top_p", 1.0) < 1.0:
+        payload["top_p"] = cfg["llm_top_p"]
+    if cfg.get("llm_repeat_penalty", 1.0) != 1.0:
+        payload["frequency_penalty"] = cfg["llm_repeat_penalty"] - 1.0
+    stop = cfg.get("llm_stop", [])
+    if stop:
+        payload["stop"] = stop
 
     response = httpx.post(f"{base_url}/chat/completions", json=payload, headers=headers, timeout=180)
     response.raise_for_status()
@@ -119,7 +138,7 @@ def _generate_remote(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tup
         text = "Got it. Please continue."
     text = trim_for_tts(text)
 
-    return text, (time.perf_counter() - start) * 1000, cfg["llm_remote_model"]
+    return text, (time.perf_counter() - start) * 1000, cfg["llm_model"]
 
 
 def _extract_openai_text(payload: dict[str, Any]) -> str:
@@ -139,17 +158,16 @@ def _extract_openai_text(payload: dict[str, Any]) -> str:
 def check_health() -> dict:
     """Check LLM backend health."""
     cfg = config.load()
-    if cfg["llm_backend"] == "mlx_local":
+    if _is_local(cfg):
         return {
             "backend": "mlx_local",
-            "model": cfg["llm_local_model"],
+            "model": cfg["llm_model"],
             "loaded": _LOCAL_MODEL is not None,
             "mlx_lm_available": mlx_load is not None,
         }
-    base_url = cfg.get("llm_remote_base_url", "")
     return {
         "backend": "openai_remote",
-        "base_url": base_url,
-        "model": cfg.get("llm_remote_model", ""),
-        "configured": bool(base_url),
+        "base_url": cfg.get("llm_base_url", ""),
+        "model": cfg.get("llm_model", ""),
+        "configured": bool(cfg.get("llm_base_url")),
     }
