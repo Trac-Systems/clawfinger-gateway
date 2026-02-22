@@ -2,9 +2,7 @@
 
 ## What This Is
 
-A local voice gateway that handles phone calls for the PhoneBridge Android app. It runs the full ASR → LLM → TTS pipeline on Apple Silicon using MLX models. The phone connects via ADB reverse port forwarding — no ngrok, no remote servers.
-
-**Location**: `/Applications/MAMP/htdocs/gpd/gateway/`
+A local voice gateway that handles phone calls for the Clawfinger Android app. It runs the full ASR → LLM → TTS pipeline on Apple Silicon using MLX models. The phone connects via ADB reverse port forwarding — no ngrok, no remote servers.
 
 ## Security: localhost-only
 
@@ -22,7 +20,6 @@ The gateway MUST only bind to `127.0.0.1`. Never use `0.0.0.0` or any network-fa
 ### Step 1: Create venv and install Python dependencies
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
@@ -45,10 +42,10 @@ pip install 'misaki==0.7.0' num2words spacy phonemizer mecab-python3 unidic-lite
 
 ### Step 3: Download models
 
-All models are cached in `gateway/.models/` via `HF_HOME`. Download them before first run to avoid cold-start delays:
+All models are cached in `.models/` via `HF_HOME`. Download them before first run to avoid cold-start delays:
 
 ```bash
-export HF_HOME=/Applications/MAMP/htdocs/gpd/gateway/.models
+export HF_HOME="$(pwd)/.models"
 source .venv/bin/activate
 python3 -c "
 from huggingface_hub import snapshot_download
@@ -108,7 +105,6 @@ Edit `config.json`:
 ### Start
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
 bin/start.sh
 ```
 
@@ -134,7 +130,7 @@ kill $(cat tmp/mlx_audio.pid)
 
 ```bash
 source .venv/bin/activate
-export HF_HOME=/Applications/MAMP/htdocs/gpd/gateway/.models
+export HF_HOME="$(pwd)/.models"
 
 # Terminal 1: mlx_audio
 python -m mlx_audio.server --host 127.0.0.1 --port 8765
@@ -358,9 +354,8 @@ gateway/
 After installation, verify each component:
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
 source .venv/bin/activate
-export HF_HOME=/Applications/MAMP/htdocs/gpd/gateway/.models
+export HF_HOME="$(pwd)/.models"
 
 # 1. mlx_audio server responds
 curl -sf http://127.0.0.1:8765/v1/models && echo "OK: mlx_audio"
