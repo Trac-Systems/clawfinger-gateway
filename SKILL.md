@@ -1,5 +1,7 @@
 # Local Voice Gateway — Installation & Operations Skill
 
+> **Platform**: macOS and Linux only. Not compatible with Windows. Primarily tested on macOS (Apple Silicon).
+
 ## What This Is
 
 A local voice gateway that handles phone calls for the Clawfinger Android app. It runs the full ASR → LLM → TTS pipeline on Apple Silicon using MLX models. The phone connects via ADB reverse port forwarding — no ngrok, no remote servers.
