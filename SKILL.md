@@ -1,15 +1,17 @@
 ---
 name: local-voice-gateway
-description: Local voice gateway for Clawfinger. Use this skill when installing, configuring, running, or troubleshooting the FastAPI gateway (ASR/LLM/TTS on Apple Silicon via MLX), its API endpoints, agent WebSocket protocol, instruction system, or control center UI. macOS/Linux only.
+description: Local voice gateway for Clawfinger. Use this skill when installing, configuring, running, or troubleshooting the FastAPI gateway (ASR/LLM/TTS), its API endpoints, agent WebSocket protocol, instruction system, or control center UI. Runs on macOS and Linux.
 ---
 
 # Local Voice Gateway — Installation & Operations Skill
 
-> **Platform**: macOS and Linux only. Not compatible with Windows. Primarily tested on macOS (Apple Silicon).
+> **Platform**: macOS and Linux. Not compatible with Windows.
 
 ## What This Is
 
-A local voice gateway that handles phone calls for the Clawfinger Android app. It runs the full ASR → LLM → TTS pipeline on Apple Silicon using MLX models. The phone connects via ADB reverse port forwarding — no ngrok, no remote servers.
+A local voice gateway that handles phone calls for the Clawfinger Android app. It runs the full ASR → LLM → TTS pipeline locally — no cloud, no remote servers. The phone connects via ADB reverse port forwarding.
+
+The gateway Python code (FastAPI) is fully cross-platform. It talks to the ASR/TTS sidecar and LLM backend via standard HTTP APIs. The default inference stack uses MLX on Apple Silicon, but on Linux you swap in compatible backends — see "Linux Setup" below.
 
 ## Security: localhost-only
 
@@ -17,12 +19,13 @@ The gateway MUST only bind to `127.0.0.1`. Never use `0.0.0.0` or any network-fa
 
 ## Prerequisites
 
-- macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.12+ (tested on 3.13.5)
 - ADB (Android Debug Bridge) for phone connection
 - ~4GB disk for models, ~500MB for venv
+- **macOS (Apple Silicon)**: MLX-based inference out of the box — no extra setup
+- **Linux**: Requires separate ASR/TTS server and LLM server — see "Linux Setup" below
 
-## Complete Installation
+## Complete Installation (macOS / Apple Silicon)
 
 ### Step 1: Create venv and install Python dependencies
 
@@ -118,6 +121,67 @@ cp config.example.json config.json
 
 All call policy and security settings are configurable at runtime via the control center UI or `POST /api/config/call`.
 
+## Linux Setup
+
+The gateway Python code runs on Linux without modification. The only macOS-specific components are the default inference backends (`mlx_audio` for ASR/TTS, `mlx-lm` for LLM). On Linux, replace them with compatible servers:
+
+### ASR/TTS sidecar replacement
+
+The gateway talks to the ASR/TTS sidecar via standard OpenAI-compatible HTTP endpoints. Any server implementing these works:
+
+- `POST /v1/audio/transcriptions` — ASR (Whisper-compatible)
+- `POST /v1/audio/speech` — TTS
+- `GET /v1/models` — health check
+
+Set `mlx_audio_base` in `config.json` to point at the replacement server (default: `http://127.0.0.1:8765`).
+
+**Compatible Linux alternatives:**
+- [faster-whisper-server](https://github.com/fedirz/faster-whisper-server) — OpenAI-compatible ASR with CUDA
+- [openedai-speech](https://github.com/matatonic/openedai-speech) — OpenAI-compatible TTS
+- Any OpenAI-compatible speech API that supports the endpoints above
+
+### LLM replacement
+
+Set `llm_base_url` in `config.json` to a local LLM server. The gateway sends standard OpenAI chat completion requests:
+
+```json
+{
+  "llm_base_url": "http://127.0.0.1:11434/v1",
+  "llm_model": "qwen2.5:1.5b",
+  "llm_api_key": ""
+}
+```
+
+**Compatible Linux alternatives:**
+- [Ollama](https://ollama.com) — `http://localhost:11434/v1`
+- [vLLM](https://github.com/vllm-project/vllm) — OpenAI-compatible server with CUDA
+- [llama.cpp server](https://github.com/ggerganov/llama.cpp) — CPU or CUDA
+- Any OpenAI-compatible chat completion endpoint
+
+### Linux installation steps
+
+```bash
+# 1. Create venv and install base deps (same as macOS)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 2. Skip mlx-audio and mlx-lm (Apple Silicon only)
+#    Instead, start your ASR/TTS server and LLM server separately
+
+# 3. Configure
+cp config.example.json config.json
+# Edit config.json:
+#   - Set mlx_audio_base to your ASR/TTS server URL
+#   - Set llm_base_url to your LLM server URL
+#   - Set llm_model to the model name your LLM server expects
+
+# 4. Start gateway only (no bin/start.sh — that starts mlx_audio)
+source .venv/bin/activate
+python app.py
+```
+
 ## Running — Starting and Stopping the Gateway
 
 > **IMPORTANT FOR AGENTS**: The gateway consists of TWO processes that must both be running for calls to work: the **mlx_audio sidecar** (ASR/TTS inference) and the **gateway** (FastAPI API + control center). If either is not running, calls will fail silently — the phone picks up but produces no audio. When the user asks to start the gateway or reports call issues, **always check if both processes are running** (`lsof -i :8996 -i :8765 | grep LISTEN`). If not, tell the user they can start it manually with `bin/start.sh` and should run it in the background to keep it up while they work.
@@ -211,7 +275,7 @@ bin/stop.sh && bin/start.sh > /tmp/gateway-all.log 2>&1 &
 
 First request to each model has extra latency due to model loading into GPU memory. **Without warming, the first phone call will fail** — the greeting TTS takes too long and the caller hears silence. `bin/start.sh` does NOT auto-warm models, so you must warm them after startup.
 
-**Typical first-load times** (Apple M4 Max):
+**Typical first-load times** (measured on Apple M4 Max, will vary by hardware):
 | Model | First load | Subsequent calls |
 |-------|-----------|-----------------|
 | TTS (Kokoro) | ~2s | ~0.5s |
@@ -583,8 +647,11 @@ Call `POST /api/config` to hot-reload from `config.json`, or restart the gateway
 
 ## Tested Environment
 
+**macOS (primary):**
 - macOS 15.6, Apple M4 Max
 - Python 3.13.5
 - mlx-audio 0.3.1, mlx-lm 0.30.5, mlx 0.30.6
 - misaki 0.7.0, spacy 3.8.11, phonemizer 3.3.0
 - fastapi 0.130.0, uvicorn 0.41.0, httpx 0.28.1
+
+**Linux**: The gateway Python code (FastAPI, voice_pipeline, llm_backend) is cross-platform and runs on Linux. Requires compatible ASR/TTS and LLM servers — see "Linux Setup" section above.
