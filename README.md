@@ -43,14 +43,48 @@ The control center is at `http://127.0.0.1:8996`. See [SKILL.md](SKILL.md) for f
 
 ## API Overview
 
+### Phone API (bearer auth required)
+
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/turn` | Full voice turn (audio in, audio out) |
+| `GET /health` | Health check — mlx_audio + LLM status |
+| `POST /api/asr` | ASR only — audio file in, transcript out |
+| `POST /api/turn` | Full voice turn — ASR → LLM → TTS (audio in, audio out) |
+| `POST /api/session/new` | Create a new session |
+| `POST /api/session/reset` | Reset session history |
+
+### Control Center (no auth)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /` | Control center web UI |
+| `GET /api/status` | System status (uptime, calls, model health, config) |
+| `GET /api/sessions` | List persisted sessions |
+| `GET /api/sessions/{id}` | Session detail with turn-by-turn transcript |
+| `POST /api/config` | Hot-reload config from disk |
 | `GET/POST /api/config/llm` | View/update LLM generation parameters at runtime |
-| `GET/POST /api/instructions` | Manage system prompt layers |
-| `WS /api/agent/ws` | Agent WebSocket (takeover, inject, observe) |
-| `GET /api/agent/call/{sid}` | Query call state (history, instructions, metadata) |
+| `POST /api/call/inject` | Inject TTS message into event stream |
 | `POST /api/call/dial` | Dial outbound call via ADB |
+| `WS /ws/events` | Real-time event stream for UI |
+
+### Instructions
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/instructions` | Get current instructions (base + per-session) |
+| `POST /api/instructions` | Set base (global) instruction |
+| `POST /api/instructions/{sid}` | Set per-session instruction |
+| `POST /api/instructions/{sid}/turn` | Set one-shot per-turn supplement |
+| `DELETE /api/instructions/{sid}` | Clear per-session instruction |
+
+### Agent Interface
+
+| Endpoint | Purpose |
+|----------|---------|
+| `WS /api/agent/ws` | Agent WebSocket (takeover, inject, observe, query state) |
+| `POST /api/agent/inject` | REST inject — TTS message into call |
+| `GET /api/agent/sessions` | List active session IDs |
+| `GET /api/agent/call/{sid}` | Query call state (history, instructions, metadata) |
 
 ## License
 

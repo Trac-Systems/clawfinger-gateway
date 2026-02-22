@@ -283,6 +283,7 @@ Three-layer instruction system controlling the LLM system prompt:
 **Prompt assembly** (`instruction_store.build_system_prompt`):
 1. Session instruction wins over base; base falls back to `config.json`'s `llm_system_prompt` if unset
 2. Per-turn supplement is appended with `\n\n` separator and consumed after one use
+3. If the assembled prompt exceeds 1500 characters, it is automatically compacted via an LLM summarization call (cached by content hash)
 
 ### Dial
 
@@ -337,6 +338,9 @@ gateway/
 ├── static/index.html       # Control center SPA (vanilla HTML/JS/CSS)
 ├── config.example.json     # Example config with defaults (copy to config.json)
 ├── config.json             # Runtime configuration (gitignored)
+├── README.md               # Project overview and API reference
+├── LICENSE.md              # MIT license
+├── SKILL.md                # Full installation, ops, and API docs
 ├── requirements.txt        # Base Python deps
 ├── bin/start.sh            # Start mlx_audio + gateway
 ├── bin/stop.sh             # Stop both
