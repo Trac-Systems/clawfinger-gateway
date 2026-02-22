@@ -93,6 +93,31 @@ cp config.example.json config.json
 - `tts_speed`: 1.2 is natural cadence for Kokoro. Lower = slower speech.
 - All settings can be overridden via env vars: `GATEWAY_PORT=9000`, `GATEWAY_BEARER_TOKEN=xyz`, etc.
 
+**Call policy settings** (gateway is the single source of truth — phone fetches these at each call start):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `call_auto_answer` | `true` | Auto-answer incoming calls |
+| `call_auto_answer_delay_ms` | `500` | Delay before answering (ms) |
+| `caller_allowlist` | `[]` | Phone numbers allowed to call. Empty = allow all. |
+| `caller_blocklist` | `[]` | Phone numbers always blocked. Checked even when allowlist is empty. |
+| `unknown_callers_allowed` | `true` | Accept calls with hidden/unavailable caller ID |
+| `greeting_incoming` | `"Hello, I am {owner}'s assistant..."` | Greeting for incoming calls. `{owner}` replaced with `greeting_owner`. |
+| `greeting_outgoing` | `"Hello, this is {owner}'s assistant calling."` | Greeting for outgoing calls. `{owner}` replaced with `greeting_owner`. |
+| `greeting_owner` | `"the owner"` | Name substituted into `{owner}` placeholders |
+| `max_duration_sec` | `300` | Max call duration in seconds |
+| `max_duration_message` | `"I'm sorry, but we have reached..."` | TTS message played when max duration is reached |
+
+**Security settings** (passphrase authentication):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `auth_passphrase` | `""` | Voice passphrase. Empty = disabled. When set, caller must speak the passphrase before the AI engages. |
+| `auth_reject_message` | `"I'm sorry, I can't help you right now. Goodbye."` | Message played on auth failure or caller rejection |
+| `auth_max_attempts` | `3` | Max passphrase attempts before rejection. 0 = unlimited. |
+
+All call policy and security settings are configurable at runtime via the control center UI or `POST /api/config/call`.
+
 ## Running
 
 ### Start
@@ -232,6 +257,16 @@ adb reverse --list
 | `transcript_hint` | string | no | Local ASR result — used as fallback if server ASR is empty |
 | `skip_asr` | string | no | `"true"` to skip server ASR, use `transcript_hint` directly |
 | `forced_reply` | string | no | Skip ASR+LLM, TTS this text directly (greeting, max duration goodbye) |
+| `caller_number` | string | no | Caller's phone number (sent by phone app for filtering) |
+| `call_direction` | string | no | `"incoming"` or `"outgoing"` |
+
+**Turn flow:**
+1. **Caller filtering** — if `caller_number` is provided, checked against `caller_blocklist`, `caller_allowlist`, and `unknown_callers_allowed`. Rejected callers receive `{"ok": false, "rejected": true, "reason": "..."}` with TTS rejection audio.
+2. **Forced reply** — if `forced_reply` is set, skips ASR + LLM, goes straight to TTS.
+3. **ASR** — transcribes audio (or uses `transcript_hint` if `skip_asr` is true).
+4. **Passphrase gate** — if `auth_passphrase` is configured and session is not yet authenticated, the transcript is fuzzy-matched against the passphrase (case-insensitive, punctuation-stripped, substring match). On match, session is marked authenticated. On failure, attempt count is incremented; after `auth_max_attempts` failures, returns rejection message with `"hangup": true`.
+5. **LLM** — generates response.
+6. **TTS** — synthesizes reply audio.
 
 **Response**:
 ```json
@@ -241,6 +276,8 @@ adb reverse --list
   "transcript": "what caller said",
   "reply": "assistant response",
   "audio_base64": "<base64 WAV>",
+  "hangup": false,
+  "rejected": false,
   "metrics": {
     "asr_ms": 450.2,
     "llm_ms": 355.8,
@@ -250,6 +287,10 @@ adb reverse --list
   }
 }
 ```
+
+**Special response fields:**
+- `rejected: true` — caller was blocked by allowlist/blocklist/unknown policy. App should play audio and hang up.
+- `hangup: true` — gateway requests call termination (e.g., max auth attempts exceeded). App should play audio and hang up.
 
 The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `audioBase64`.
 
@@ -264,9 +305,63 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 | `POST` | `/api/config` | Hot-reload config from disk |
 | `GET` | `/api/config/llm` | Current LLM generation params |
 | `POST` | `/api/config/llm` | Hot-update LLM params — `{"temperature": 0.5, "top_p": 0.9, ...}` |
+| `GET` | `/api/config/call` | Current call policy + security settings |
+| `POST` | `/api/config/call` | Update call policy + security settings |
 | `POST` | `/api/call/inject` | Inject TTS message — `{"text": "...", "session_id": "..."}` |
 | `POST` | `/api/call/dial` | Dial outbound call — `{"number": "+49..."}` |
 | `WS` | `/ws/events` | Real-time event stream for UI |
+
+### Call Policy API
+
+**`GET /api/config/call`** — Returns all call policy settings. The phone app fetches this at each call start.
+
+```json
+{
+  "auto_answer": true,
+  "auto_answer_delay_ms": 500,
+  "caller_allowlist": [],
+  "caller_blocklist": [],
+  "unknown_callers_allowed": true,
+  "greeting_incoming": "Hello, I am Markus's assistant...",
+  "greeting_outgoing": "Hello, this is Markus's assistant calling.",
+  "greeting_incoming_template": "Hello, I am {owner}'s assistant...",
+  "greeting_outgoing_template": "Hello, this is {owner}'s assistant calling.",
+  "greeting_owner": "Markus",
+  "max_duration_sec": 300,
+  "max_duration_message": "...",
+  "auth_required": true,
+  "auth_reject_message": "...",
+  "auth_max_attempts": 3
+}
+```
+
+Note: `auth_passphrase` is **never returned** — only `auth_required` (bool). The phone doesn't need the passphrase; the gateway handles verification internally. The `greeting_*_template` fields contain the raw `{owner}` placeholders for editing; the `greeting_incoming`/`greeting_outgoing` fields have `{owner}` already resolved.
+
+**`POST /api/config/call`** — Updates call settings. Accepts any subset of fields:
+
+```bash
+curl -X POST http://127.0.0.1:8996/api/config/call \
+  -H "Content-Type: application/json" \
+  -d '{"greeting_incoming": "Hi!", "max_duration_sec": 600, "auth_passphrase": "blue harvest"}'
+```
+
+Publishes `config.call_updated` event to all UI/agent subscribers.
+
+### Passphrase Authentication
+
+When `auth_passphrase` is set (non-empty), callers must speak the passphrase before the AI assistant engages:
+
+1. **Greeting plays normally** — `forced_reply` turns bypass the passphrase gate.
+2. **First real turn** — the caller's transcript is fuzzy-matched against the passphrase:
+   - Case-insensitive: `"Blue Harvest"` matches `"blue harvest"`
+   - Punctuation stripped: `"blue, harvest!"` matches `"blue harvest"`
+   - Substring match: `"the passphrase is blue harvest"` matches `"blue harvest"`
+3. **On match** — session is marked authenticated, reply: "Authentication successful. How can I help you?"
+4. **On failure** — attempt counter incremented:
+   - Under `auth_max_attempts`: reply: "That's not correct. Please try again."
+   - At `auth_max_attempts` (default 3): reply: `auth_reject_message` + `hangup: true` → phone disconnects.
+   - `auth_max_attempts: 0` = unlimited retries.
+5. **Once authenticated**, the session stays authenticated for all subsequent turns.
 
 ### Instructions
 
@@ -313,15 +408,22 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `release` | `session_id` | Release LLM control back to local LLM |
 | `inject` | `text`, `session_id` | Inject TTS message into call |
 | `set_instructions` | `instructions`, `session_id`, `scope` | Set instructions; scope: `global`, `session`, or `turn` |
+| `set_call_config` | `config` | Update call policy settings (non-security subset only) |
 | `dial` | `number` | Dial outbound call |
 | `get_call_state` | `session_id` | Query full call state (history, instructions, takeover status) |
 | `ping` | — | Heartbeat |
 
-**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `dial.ack`, `call_state`, `pong`.
+**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `call_state`, `pong`.
+
+**`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
+
+Allowed keys: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`.
+
+Blocked from agents: `auth_passphrase`, `auth_*`, `caller_allowlist`, `caller_blocklist`, `unknown_callers_allowed`. These can only be changed via `POST /api/config/call` (control center).
 
 During takeover, gateway sends `{"type": "turn.request", "session_id": "...", "transcript": "..."}` and expects `{"reply": "..."}` within 30s.
 
-Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `instructions.updated`, `config.llm_updated`, `call.dial`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
+Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `turn.caller_rejected`, `turn.authenticated`, `turn.auth_failed`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `instructions.updated`, `config.llm_updated`, `config.call_updated`, `call.dial`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
 
 ## File Structure
 
@@ -331,7 +433,7 @@ gateway/
 ├── config.py               # config.json loader + env var overrides
 ├── voice_pipeline.py       # ASR/TTS via mlx_audio HTTP
 ├── llm_backend.py          # LLM abstraction (local MLX / remote OpenAI)
-├── session_store.py        # In-memory session history + JSON persistence
+├── session_store.py        # In-memory session history + caller info + auth state
 ├── event_bus.py            # Async pub/sub → UI + agent WebSockets
 ├── agent_interface.py      # Agent WS protocol (takeover/inject/release)
 ├── instruction_store.py    # In-memory instruction layers (base/session/turn)
@@ -414,8 +516,8 @@ Check `tmp/mlx_audio.log`. Common causes:
 4. Force-stop and restart the app after profile changes
 5. Check `tmp/gateway.log` for incoming requests — if only `/api/status` polling, phone isn't connecting
 
-### First turn slow / times out
-Pre-warm models after startup. First TTS call loads Kokoro (~3s), first ASR call loads Parakeet (~2s). LLM is pre-warmed automatically.
+### First turn slow / times out / greeting fails
+Pre-warm models after startup. First TTS call loads Kokoro (~2s), first ASR call loads Parakeet (~90s on M4 Max). LLM is pre-warmed automatically. Without warming, the greeting turn can take long enough that the caller hangs up before hearing anything. Always warm models after starting services — `bin/start.sh` handles this automatically, but if starting manually, run the warmup commands from the "Pre-warming Models" section above.
 
 ### Config changes not taking effect
 Call `POST /api/config` to hot-reload from `config.json`, or restart the gateway. mlx_audio model changes require mlx_audio restart.
