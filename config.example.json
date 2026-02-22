@@ -25,7 +25,7 @@
   "caller_blocklist": [],
   "unknown_callers_allowed": true,
   "greeting_incoming": "Hello, I am {owner}'s assistant. Please wait for the beep before speaking.",
-  "greeting_outgoing": "Hello, this is {owner}'s assistant calling.",
+  "greeting_outgoing": "Hello, this is {owner}'s assistant calling. Please wait for the beep before speaking.",
   "greeting_owner": "the owner",
   "max_duration_sec": 300,
   "max_duration_message": "I'm sorry, but we have reached the maximum call duration. Goodbye!",

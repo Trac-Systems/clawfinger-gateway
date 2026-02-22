@@ -103,7 +103,7 @@ cp config.example.json config.json
 | `caller_blocklist` | `[]` | Phone numbers always blocked. Checked even when allowlist is empty. |
 | `unknown_callers_allowed` | `true` | Accept calls with hidden/unavailable caller ID |
 | `greeting_incoming` | `"Hello, I am {owner}'s assistant..."` | Greeting for incoming calls. `{owner}` replaced with `greeting_owner`. |
-| `greeting_outgoing` | `"Hello, this is {owner}'s assistant calling."` | Greeting for outgoing calls. `{owner}` replaced with `greeting_owner`. |
+| `greeting_outgoing` | `"Hello, this is {owner}'s assistant calling. Please wait for the beep before speaking."` | Greeting for outgoing calls. `{owner}` replaced with `greeting_owner`. |
 | `greeting_owner` | `"the owner"` | Name substituted into `{owner}` placeholders |
 | `max_duration_sec` | `300` | Max call duration in seconds |
 | `max_duration_message` | `"I'm sorry, but we have reached..."` | TTS message played when max duration is reached |
@@ -384,7 +384,7 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
   "greeting_incoming": "Hello, I am Markus's assistant...",
   "greeting_outgoing": "Hello, this is Markus's assistant calling.",
   "greeting_incoming_template": "Hello, I am {owner}'s assistant...",
-  "greeting_outgoing_template": "Hello, this is {owner}'s assistant calling.",
+  "greeting_outgoing_template": "Hello, this is {owner}'s assistant calling. Please wait for the beep before speaking.",
   "greeting_owner": "Markus",
   "max_duration_sec": 300,
   "max_duration_message": "...",

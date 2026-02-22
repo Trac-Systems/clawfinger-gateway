@@ -69,7 +69,7 @@ def _migrate(cfg: dict[str, Any]) -> None:
     cfg.setdefault("caller_blocklist", [])
     cfg.setdefault("unknown_callers_allowed", True)
     cfg.setdefault("greeting_incoming", "Hello, I am {owner}'s assistant. Please wait for the beep before speaking.")
-    cfg.setdefault("greeting_outgoing", "Hello, this is {owner}'s assistant calling.")
+    cfg.setdefault("greeting_outgoing", "Hello, this is {owner}'s assistant calling. Please wait for the beep before speaking.")
     cfg.setdefault("greeting_owner", "the owner")
     cfg.setdefault("max_duration_sec", 300)
     cfg.setdefault("max_duration_message", "I'm sorry, but we have reached the maximum call duration. Goodbye!")
