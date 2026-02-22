@@ -76,34 +76,20 @@ for repo in [
 
 ### Step 4: Configure
 
-Edit `config.json`:
+Copy the example config and edit as needed:
 
-```json
-{
-  "host": "127.0.0.1",
-  "port": 8996,
-  "bearer_token": "localdev",
-  "mlx_audio_base": "http://127.0.0.1:8765",
-  "stt_model": "mlx-community/parakeet-tdt-0.6b-v2",
-  "stt_language": "en",
-  "tts_model": "mlx-community/Kokoro-82M-bf16",
-  "tts_voice": "af_heart",
-  "tts_speed": 1.2,
-  "llm_backend": "mlx_local",
-  "llm_local_model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
-  "llm_remote_base_url": "",
-  "llm_remote_api_key": "",
-  "llm_remote_model": "",
-  "llm_max_tokens": 400,
-  "llm_temperature": 0.2,
-  "llm_system_prompt": "You are a concise, friendly real-time voice assistant. Respond in plain English with 2-3 short sentences and no markdown.",
-  "max_history_turns": 8
-}
+```bash
+cp config.example.json config.json
 ```
+
+`config.example.json` ships with working defaults for local MLX inference. Edit `config.json` to change your bearer token or point to a remote LLM.
 
 **Key settings:**
 - `bearer_token`: Must be non-empty. Phone profile must have the same value or profile parsing fails silently.
-- `llm_backend`: `"mlx_local"` for in-process MLX, or `"openai_remote"` to use an external OpenAI-compatible endpoint.
+- `llm_model`: Model name — loaded locally via MLX when `llm_base_url` is empty, or sent as `model` field to a remote OpenAI-compatible endpoint.
+- `llm_base_url`: Empty = local MLX. Set to an OpenAI-compatible base URL (e.g. `http://localhost:11434/v1`) for remote inference.
+- `llm_api_key`: Bearer token for remote endpoint (empty = no auth).
+- `llm_top_p`, `llm_top_k`, `llm_repeat_penalty`, `llm_stop`: Generation parameters — adjustable at runtime via the control center LLM Settings panel or `POST /api/config/llm`.
 - `tts_speed`: 1.2 is natural cadence for Kokoro. Lower = slower speech.
 - All settings can be overridden via env vars: `GATEWAY_PORT=9000`, `GATEWAY_BEARER_TOKEN=xyz`, etc.
 
@@ -167,7 +153,7 @@ with tempfile.NamedTemporaryFile(suffix='.wav', delete=False, dir='tmp') as f:
   -F "file=@{}" -F "model=mlx-community/parakeet-tdt-0.6b-v2" -F "language=en" -o /dev/null
 ```
 
-The LLM is automatically pre-warmed at gateway startup when `llm_backend` is `mlx_local`.
+The LLM is automatically pre-warmed at gateway startup when running in local MLX mode (i.e. `llm_base_url` is empty).
 
 ## Phone Connection
 
@@ -276,6 +262,8 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 | `GET` | `/api/sessions` | List persisted sessions |
 | `GET` | `/api/sessions/{id}` | Full session detail with turn-by-turn transcript |
 | `POST` | `/api/config` | Hot-reload config from disk |
+| `GET` | `/api/config/llm` | Current LLM generation params |
+| `POST` | `/api/config/llm` | Hot-update LLM params — `{"temperature": 0.5, "top_p": 0.9, ...}` |
 | `POST` | `/api/call/inject` | Inject TTS message — `{"text": "...", "session_id": "..."}` |
 | `POST` | `/api/call/dial` | Dial outbound call — `{"number": "+49..."}` |
 | `WS` | `/ws/events` | Real-time event stream for UI |
@@ -314,6 +302,7 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `WS` | `/api/agent/ws` | Agent WebSocket — receives all events, full bidirectional control |
 | `POST` | `/api/agent/inject` | REST inject — `{"text": "...", "session_id": "..."}` |
 | `GET` | `/api/agent/sessions` | List active session IDs |
+| `GET` | `/api/agent/call/{sid}` | Full call state — history, instructions, turn count, takeover status |
 
 **Agent WebSocket protocol** — agent sends JSON messages:
 
@@ -324,13 +313,14 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `inject` | `text`, `session_id` | Inject TTS message into call |
 | `set_instructions` | `instructions`, `session_id`, `scope` | Set instructions; scope: `global`, `session`, or `turn` |
 | `dial` | `number` | Dial outbound call |
+| `get_call_state` | `session_id` | Query full call state (history, instructions, takeover status) |
 | `ping` | — | Heartbeat |
 
-**Ack messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `dial.ack`, `pong`.
+**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `dial.ack`, `call_state`, `pong`.
 
 During takeover, gateway sends `{"type": "turn.request", "session_id": "...", "transcript": "..."}` and expects `{"reply": "..."}` within 30s.
 
-Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `instructions.updated`, `call.dial`, `status.update`.
+Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `instructions.updated`, `config.llm_updated`, `call.dial`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
 
 ## File Structure
 
@@ -345,7 +335,8 @@ gateway/
 ├── agent_interface.py      # Agent WS protocol (takeover/inject/release)
 ├── instruction_store.py    # In-memory instruction layers (base/session/turn)
 ├── static/index.html       # Control center SPA (vanilla HTML/JS/CSS)
-├── config.json             # Runtime configuration
+├── config.example.json     # Example config with defaults (copy to config.json)
+├── config.json             # Runtime configuration (gitignored)
 ├── requirements.txt        # Base Python deps
 ├── bin/start.sh            # Start mlx_audio + gateway
 ├── bin/stop.sh             # Stop both
