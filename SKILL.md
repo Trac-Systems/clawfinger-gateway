@@ -7,11 +7,25 @@ description: Local voice gateway for Clawfinger. Use this skill when installing,
 
 > **Platform**: macOS and Linux. Not compatible with Windows.
 
+> **Repo**: [Trac-Systems/clawfinger-gateway](https://github.com/Trac-Systems/clawfinger-gateway/)
+> **Companion repo**: [Trac-Systems/clawfinger-app](https://github.com/Trac-Systems/clawfinger-app/) — the Android phone app. Set up the phone FIRST (root, install app), then come here for the gateway.
+
 ## What This Is
 
 A local voice gateway that handles phone calls for the Clawfinger Android app. It runs the full ASR → LLM → TTS pipeline locally — no cloud, no remote servers. The phone connects via ADB reverse port forwarding.
 
 The gateway Python code (FastAPI) is fully cross-platform. It talks to the ASR/TTS sidecar and LLM backend via standard HTTP APIs. The default inference stack uses MLX on Apple Silicon, but on Linux you swap in compatible backends — see "Linux Setup" below.
+
+## Overall setup order
+
+The gateway is step 4 in the full setup flow. Complete the phone side first:
+
+1. **Host setup**: Install ADB/fastboot (see [clawfinger-app SKILL.md](https://github.com/Trac-Systems/clawfinger-app/))
+2. **Root the phone**: Follow the device-specific root skill in clawfinger-app
+3. **Install the app**: Build and install the Clawfinger APK
+4. **Set up the gateway** (you are here): Install, configure, start, and warm up
+5. **Push a profile and connect**: Push a device profile, set up ADB reverse, verify
+6. **Tune endpoints**: Capture/playback endpoint training via the voice bridge skill in clawfinger-app
 
 ## Security: localhost-only
 
