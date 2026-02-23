@@ -10,9 +10,11 @@ description: Local voice gateway for Clawfinger. Use this skill when installing,
 > **Repo**: [Trac-Systems/clawfinger-gateway](https://github.com/Trac-Systems/clawfinger-gateway/)
 > **Companion repo**: [Trac-Systems/clawfinger-app](https://github.com/Trac-Systems/clawfinger-app/) — the Android phone app. Set up the phone FIRST (root, install app), then come here for the gateway. Ignore this if you are an agent that just wants to use an already installed & running gateway/app stack!
 
-## Important
+## Important — OpenClaw Agents
 
-If you are an agent that only needs to use a gateway, then skip all installation instructions and focus on how to use the gateway! (e.g. OpenClaw, zeroClaw, etc.)
+**If you are an OpenClaw agent with the Clawfinger plugin loaded, DO NOT use the raw API endpoints or WebSocket directly.** Use the `clawfinger_*` tools instead (e.g. `clawfinger_status`, `clawfinger_sessions`, `clawfinger_dial`, `clawfinger_takeover`). The plugin maintains a persistent WebSocket bridge automatically — you never need to connect to WebSockets yourself. See the **clawfinger** skill for the tool reference.
+
+If you are an agent without the plugin that only needs to use a gateway, then skip all installation instructions and focus on the REST API endpoints below.
 
 ## What This Is
 
@@ -215,7 +217,7 @@ python app.py
 ### Start (recommended)
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
+cd /path/to/gateway
 bin/start.sh
 ```
 
@@ -228,20 +230,20 @@ The script waits for mlx_audio to be healthy before starting the gateway. LLM is
 **To run in the background** (recommended so it stays up while you work):
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
+cd /path/to/gateway
 nohup bin/start.sh > /tmp/gateway-all.log 2>&1 &
 echo "Gateway starting in background, logs at /tmp/gateway-all.log"
 ```
 
 Or if the agent is starting it programmatically:
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway && bin/start.sh > /tmp/gateway-all.log 2>&1 &
+cd /path/to/gateway && bin/start.sh > /tmp/gateway-all.log 2>&1 &
 ```
 
 ### Stop
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
+cd /path/to/gateway
 bin/stop.sh
 ```
 
@@ -291,7 +293,7 @@ python app.py
 The gateway serves `static/index.html` from disk on each request, but Python code changes require a restart:
 
 ```bash
-cd /Applications/MAMP/htdocs/gpd/gateway
+cd /path/to/gateway
 bin/stop.sh && bin/start.sh > /tmp/gateway-all.log 2>&1 &
 ```
 
