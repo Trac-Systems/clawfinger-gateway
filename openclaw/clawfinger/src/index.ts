@@ -284,49 +284,182 @@ export default function register(api: OpenClawPluginApi) {
 
   // --- Slash command ---
 
+  const HELP_TEXT = [
+    "Clawfinger commands:",
+    "",
+    "/clawfinger                                  — this help",
+    "/clawfinger status                           — gateway health, bridge, sessions, uptime",
+    "/clawfinger sessions                         — list active session IDs",
+    "/clawfinger state <session_id>               — full call state (history, instructions, takeover)",
+    "/clawfinger dial <number>                    — dial outbound call (e.g. +49123456789)",
+    "/clawfinger inject <text>                    — inject TTS into active call (first session)",
+    "/clawfinger inject <session_id> <text>       — inject TTS into specific session",
+    "/clawfinger takeover <session_id>            — take over LLM control for a session",
+    "/clawfinger release <session_id>             — release LLM control back to local LLM",
+    "/clawfinger context get <session_id>         — read injected knowledge",
+    "/clawfinger context set <session_id> <text>  — inject/replace knowledge",
+    "/clawfinger context clear <session_id>       — clear injected knowledge",
+    "/clawfinger config call                      — show call policy settings",
+    "/clawfinger config tts                       — show TTS voice and speed",
+    "/clawfinger config llm                       — show LLM model and params",
+    "/clawfinger instructions <text>              — set global LLM instructions",
+    "/clawfinger instructions <session_id> <text> — set per-session instructions",
+  ].join("\n");
+
   api.registerCommand({
     name: "clawfinger",
-    description: "Clawfinger gateway status and quick actions.",
+    description: "Clawfinger gateway control — status, dial, inject, takeover, context, config.",
     acceptsArgs: true,
     handler: async (ctx: { args?: string }) => {
       const args = ctx.args?.trim() || "";
       const tokens = args.split(/\s+/).filter(Boolean);
-      const action = (tokens[0] || "status").toLowerCase();
+      const action = (tokens[0] || "help").toLowerCase();
 
-      if (action === "status") {
-        try {
+      try {
+        // --- status ---
+        if (action === "status") {
           const s = await client.status();
           const bridgeOk = bridge.isConnected ? "connected" : "disconnected";
+          const agents = s.agents?.length || 0;
+          const takenOver = bridge.takenOverSessions.size;
           return {
             text: [
               `Gateway: ${s.mlx_audio?.ok ? "healthy" : "degraded"}`,
               `Bridge: ${bridgeOk}`,
               `Sessions: ${s.active_sessions || 0}`,
+              `Agents: ${agents}`,
+              `Takeovers: ${takenOver}`,
               `Uptime: ${Math.floor((s.uptime_s || 0) / 60)}m`,
+              `LLM: ${s.llm?.model || "unknown"} (${s.llm?.loaded ? "loaded" : "not loaded"})`,
             ].join("\n"),
           };
-        } catch (e) {
-          return { text: `Gateway unreachable: ${e}` };
         }
-      }
 
-      if (action === "dial" && tokens[1]) {
-        const result = await client.dial(tokens[1]);
-        return {
-          text: result.ok
-            ? `Dialing ${tokens[1]}...`
-            : `Dial failed: ${result.detail}`,
-        };
-      }
+        // --- sessions ---
+        if (action === "sessions") {
+          const sessions = await client.getSessions();
+          if (!sessions.length) return { text: "No active sessions." };
+          return { text: `Active sessions (${sessions.length}):\n${sessions.map((s: string) => `  ${s}`).join("\n")}` };
+        }
 
-      return {
-        text: [
-          "Clawfinger commands:",
-          "",
-          "/clawfinger status",
-          "/clawfinger dial <number>",
-        ].join("\n"),
-      };
+        // --- state <session_id> ---
+        if (action === "state") {
+          if (!tokens[1]) return { text: "Usage: /clawfinger state <session_id>" };
+          const state = await client.getCallState(tokens[1]);
+          const lines = [
+            `Session: ${state.session_id}`,
+            `Turns: ${state.turn_count}`,
+            `Takeover: ${state.agent_takeover ? "yes" : "no"}`,
+          ];
+          if (state.history?.length) {
+            lines.push("", "Recent:");
+            for (const msg of state.history.slice(-4)) {
+              const preview = String(msg.content || "").slice(0, 80);
+              lines.push(`  ${msg.role}: ${preview}`);
+            }
+          }
+          return { text: lines.join("\n") };
+        }
+
+        // --- dial <number> ---
+        if (action === "dial") {
+          if (!tokens[1]) return { text: "Usage: /clawfinger dial <number>" };
+          const result = await client.dial(tokens[1]);
+          return { text: result.ok ? `Dialing ${tokens[1]}...` : `Dial failed: ${result.detail}` };
+        }
+
+        // --- inject [session_id] <text> ---
+        if (action === "inject") {
+          if (!tokens[1]) return { text: "Usage: /clawfinger inject <text>  or  /clawfinger inject <session_id> <text>" };
+          // If first arg looks like a session ID (hex, 20+ chars) and there's more text, use it as session_id
+          let sid: string | undefined;
+          let text: string;
+          if (tokens[1].length >= 20 && /^[a-f0-9]+$/i.test(tokens[1]) && tokens[2]) {
+            sid = tokens[1];
+            text = tokens.slice(2).join(" ");
+          } else {
+            text = tokens.slice(1).join(" ");
+          }
+          const result = await client.inject(text, sid);
+          return { text: result.ok ? `Injected: "${text}"` : `Inject failed: ${JSON.stringify(result)}` };
+        }
+
+        // --- takeover <session_id> ---
+        if (action === "takeover") {
+          if (!tokens[1]) return { text: "Usage: /clawfinger takeover <session_id>" };
+          const ok = await bridge.takeover(tokens[1]);
+          return { text: ok ? `Takeover active for ${tokens[1]}` : `Takeover failed for ${tokens[1]}` };
+        }
+
+        // --- release <session_id> ---
+        if (action === "release") {
+          if (!tokens[1]) return { text: "Usage: /clawfinger release <session_id>" };
+          const ok = await bridge.release(tokens[1]);
+          return { text: ok ? `Released ${tokens[1]}` : `Release failed for ${tokens[1]}` };
+        }
+
+        // --- context get|set|clear <session_id> [text] ---
+        if (action === "context") {
+          const sub = (tokens[1] || "").toLowerCase();
+          const sid = tokens[2] || "";
+
+          if (sub === "get" && sid) {
+            const ctx = await client.getContext(sid);
+            return { text: ctx.has_knowledge ? `Context for ${sid}:\n${ctx.knowledge}` : `No context for ${sid}.` };
+          }
+          if (sub === "set" && sid && tokens[3]) {
+            const text = tokens.slice(3).join(" ");
+            await client.setContext(sid, text);
+            return { text: `Context set for ${sid}.` };
+          }
+          if (sub === "clear" && sid) {
+            await client.clearContext(sid);
+            return { text: `Context cleared for ${sid}.` };
+          }
+          return { text: "Usage:\n  /clawfinger context get <session_id>\n  /clawfinger context set <session_id> <text>\n  /clawfinger context clear <session_id>" };
+        }
+
+        // --- config call|tts|llm ---
+        if (action === "config") {
+          const sub = (tokens[1] || "call").toLowerCase();
+          if (sub === "call") {
+            const cfg = await client.getCallConfig();
+            return { text: JSON.stringify(cfg, null, 2) };
+          }
+          if (sub === "tts") {
+            const cfg = await client.getTtsConfig();
+            return { text: JSON.stringify(cfg, null, 2) };
+          }
+          if (sub === "llm") {
+            const cfg = await client.getLlmConfig();
+            return { text: JSON.stringify(cfg, null, 2) };
+          }
+          return { text: "Usage: /clawfinger config call|tts|llm" };
+        }
+
+        // --- instructions [session_id] <text> ---
+        if (action === "instructions") {
+          if (!tokens[1]) return { text: "Usage:\n  /clawfinger instructions <text>  (global)\n  /clawfinger instructions <session_id> <text>  (per-session)" };
+          let sid = "";
+          let text: string;
+          let scope = "global";
+          if (tokens[1].length >= 20 && /^[a-f0-9]+$/i.test(tokens[1]) && tokens[2]) {
+            sid = tokens[1];
+            text = tokens.slice(2).join(" ");
+            scope = "session";
+          } else {
+            text = tokens.slice(1).join(" ");
+          }
+          bridge.sendRaw({ type: "set_instructions", instructions: text, scope, session_id: sid });
+          return { text: `Instructions set (${scope}).` };
+        }
+
+        // --- help (default) ---
+        return { text: HELP_TEXT };
+
+      } catch (e) {
+        return { text: `Error: ${e}` };
+      }
     },
   });
 }

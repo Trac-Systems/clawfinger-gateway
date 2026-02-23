@@ -158,8 +158,27 @@ This single-reader pattern eliminates WebSocket race conditions. The gateway's W
 
 ## Slash Command
 
-`/clawfinger status` — Quick gateway health check
-`/clawfinger dial <number>` — Dial a phone number
+All gateway operations are also available as direct `/clawfinger` subcommands that bypass the LLM:
+
+| Command | Description |
+|---------|-------------|
+| `/clawfinger` | Show help with all subcommands |
+| `/clawfinger status` | Gateway health, bridge connection, sessions, uptime, LLM status |
+| `/clawfinger sessions` | List active session IDs |
+| `/clawfinger state <session_id>` | Full call state: history, instructions, takeover status |
+| `/clawfinger dial <number>` | Dial outbound call (e.g. `+49123456789`) |
+| `/clawfinger inject <text>` | Inject TTS into active call (uses first session) |
+| `/clawfinger inject <session_id> <text>` | Inject TTS into a specific session |
+| `/clawfinger takeover <session_id>` | Take over LLM control for a session |
+| `/clawfinger release <session_id>` | Release LLM control back to local LLM |
+| `/clawfinger context get <session_id>` | Read injected knowledge for a session |
+| `/clawfinger context set <session_id> <text>` | Inject/replace knowledge for a session |
+| `/clawfinger context clear <session_id>` | Clear injected knowledge |
+| `/clawfinger config call` | Show call policy settings (auto-answer, greetings, filtering) |
+| `/clawfinger config tts` | Show TTS voice and speed settings |
+| `/clawfinger config llm` | Show LLM model and generation params |
+| `/clawfinger instructions <text>` | Set global LLM system instructions |
+| `/clawfinger instructions <session_id> <text>` | Set per-session LLM instructions |
 
 ## Plugin Architecture
 
