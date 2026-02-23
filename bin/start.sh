@@ -7,6 +7,11 @@ VENV_DIR="$GW_DIR/.venv"
 PID_DIR="$GW_DIR/tmp"
 mkdir -p "$PID_DIR"
 
+# Ensure Homebrew tools (ffmpeg etc.) are in PATH for non-interactive shells
+if [ -d "/opt/homebrew/bin" ]; then
+  export PATH="/opt/homebrew/bin:$PATH"
+fi
+
 # Keep all model downloads inside gateway/.models/
 export HF_HOME="$GW_DIR/.models"
 mkdir -p "$HF_HOME"
