@@ -32,7 +32,11 @@ cleanup() {
     rm -f "$PID_DIR/gateway.pid"
   fi
 }
-trap cleanup EXIT INT TERM
+# Only cleanup on explicit stop signals, NOT on EXIT (which fires on
+# SIGHUP when SSH disconnects and kills background children).
+trap cleanup INT TERM
+# Ignore HUP so SSH disconnect doesn't kill us
+trap '' HUP
 
 # Activate venv
 if [ -d "$VENV_DIR" ]; then
