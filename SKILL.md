@@ -463,6 +463,132 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 | `POST` | `/api/call/dial` | Dial outbound call — `{"number": "+49..."}` |
 | `WS` | `/ws/events` | Real-time event stream for UI |
 
+### TTS Config API
+
+**`GET /api/config/tts`** — Returns current TTS settings and the full list of available voices.
+
+```json
+{
+  "voice": "af_heart",
+  "speed": 1.2,
+  "model": "mlx-community/Kokoro-82M-bf16",
+  "voices": {
+    "American Female": ["af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky"],
+    "American Male": ["am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa"],
+    "British Female": ["bf_alice", "bf_emma", "bf_isabella", "bf_lily"],
+    "British Male": ["bm_daniel", "bm_fable", "bm_george", "bm_lewis"]
+  }
+}
+```
+
+The `voices` dict is populated for Kokoro models. For non-Kokoro TTS models, `voices` is `{}` and the user must type a voice ID manually.
+
+**`POST /api/config/tts`** — Updates TTS voice and/or speed. Accepts short or prefixed keys:
+
+```bash
+curl -X POST http://127.0.0.1:8996/api/config/tts \
+  -H "Content-Type: application/json" \
+  -d '{"voice": "am_michael", "speed": 1.0}'
+```
+
+| Field | Aliases | Type | Description |
+|-------|---------|------|-------------|
+| `voice` | `tts_voice` | string | Kokoro voice ID (e.g. `af_heart`, `am_michael`, `bf_emma`) |
+| `speed` | `tts_speed` | float | Speech speed. 1.2 = natural Kokoro cadence. Lower = slower. |
+
+Returns the full TTS config response (same shape as GET). Saves to `config.json`. Publishes `config.tts_updated` event.
+
+**`POST /api/tts/preview`** — Synthesize a sample phrase with a given voice. Returns audio for playback.
+
+```bash
+curl -X POST http://127.0.0.1:8996/api/tts/preview \
+  -H "Content-Type: application/json" \
+  -d '{"voice": "am_michael", "speed": 1.0, "text": "Hello, how are you?"}'
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `text` | no | `"Hello, this is a voice preview."` | Text to synthesize |
+| `voice` | no | current `tts_voice` | Voice ID to preview |
+| `speed` | no | current `tts_speed` | Speed to preview |
+
+```json
+{
+  "ok": true,
+  "audio_base64": "<base64 WAV>",
+  "voice": "am_michael",
+  "speed": 1.0
+}
+```
+
+Calls the mlx_audio sidecar directly. Timeout: 180s. Does not affect the current config — use `POST /api/config/tts` to apply.
+
+### LLM Config API
+
+**`GET /api/config/llm`** — Returns all LLM generation parameters.
+
+```json
+{
+  "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+  "base_url": "",
+  "has_api_key": false,
+  "max_tokens": 400,
+  "context_tokens": 0,
+  "max_history_turns": 8,
+  "temperature": 0.2,
+  "top_p": 1.0,
+  "top_p_enabled": true,
+  "top_k": 0,
+  "top_k_enabled": true,
+  "repeat_penalty": 1.0,
+  "stop": [],
+  "is_local": true
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `model` | Model name (loaded locally via MLX when `base_url` is empty, or sent to remote endpoint) |
+| `base_url` | Empty = local MLX. Set to an OpenAI-compatible base URL for remote inference. |
+| `has_api_key` | `true` if `llm_api_key` is set (the actual key is never returned) |
+| `max_tokens` | Max output tokens per LLM turn |
+| `context_tokens` | Total context window budget in tokens. `0` = no token-based limit (use `max_history_turns` only). |
+| `max_history_turns` | Max conversation turns to keep in verbatim history before compaction triggers |
+| `temperature` | Sampling temperature |
+| `top_p` | Nucleus sampling threshold (only sent to model if `top_p_enabled` is `true` AND value < 1.0) |
+| `top_p_enabled` | Whether `top_p` is sent to the model. Disable for APIs that don't support it. |
+| `top_k` | Top-K sampling (only sent to local MLX model if `top_k_enabled` is `true` AND value > 0) |
+| `top_k_enabled` | Whether `top_k` is sent to the model. OpenAI API doesn't support `top_k`. |
+| `repeat_penalty` | Repetition penalty (local MLX only) |
+| `stop` | Stop sequences |
+| `is_local` | `true` if using local MLX inference (`base_url` empty), `false` if remote |
+
+**`POST /api/config/llm`** — Updates LLM settings. Accepts any subset of fields. Both short aliases and full config keys work:
+
+```bash
+curl -X POST http://127.0.0.1:8996/api/config/llm \
+  -H "Content-Type: application/json" \
+  -d '{"temperature": 0.5, "top_p": 0.9, "top_k_enabled": false, "context_tokens": 4096}'
+```
+
+| Field | Aliases | Type | Description |
+|-------|---------|------|-------------|
+| `model` | `llm_model` | string | Model name |
+| `base_url` | `llm_base_url` | string | Remote endpoint URL (empty = local) |
+| `api_key` | `llm_api_key` | string | Bearer token for remote endpoint |
+| `max_tokens` | `llm_max_tokens` | int | Max output tokens |
+| `temperature` | `llm_temperature` | float | Sampling temperature |
+| `top_p` | `llm_top_p` | float | Nucleus sampling threshold |
+| `top_p_enabled` | `llm_top_p_enabled` | bool | Send `top_p` to model |
+| `top_k` | `llm_top_k` | int | Top-K sampling |
+| `top_k_enabled` | `llm_top_k_enabled` | bool | Send `top_k` to model |
+| `repeat_penalty` | `llm_repeat_penalty` | float | Repetition penalty |
+| `stop` | `llm_stop` | list | Stop sequences |
+| `context_tokens` | `llm_context_tokens` | int | Context window budget |
+| `max_history_turns` | — | int | Max verbatim history turns |
+
+Returns the full LLM config response (same shape as GET). Saves to `config.json`. Publishes `config.llm_updated` event. Model changes are hot-loaded on the next turn — no restart needed.
+
 ### Call Policy API
 
 **`GET /api/config/call`** — Returns all call policy settings. The phone app fetches this at each call start.
@@ -542,6 +668,79 @@ When conversation history exceeds `max_history_turns`, older messages are summar
 
 Agents can inject knowledge into a session that persists until cleared. Injected knowledge appears as a system message right before the current user turn, so the LLM has it fresh. Each `inject_context` call **replaces** the previous knowledge for that session (one slot per session). Use the REST or WebSocket endpoints below.
 
+**`GET /api/agent/context/{session_id}`** — Read the current injected knowledge for a session.
+
+```json
+{
+  "session_id": "abc123",
+  "knowledge": "Caller is John Smith, account #12345. Balance: €1,234.56.",
+  "has_knowledge": true
+}
+```
+
+`has_knowledge` is `false` and `knowledge` is `""` when nothing is injected.
+
+**`POST /api/agent/context/{session_id}`** — Inject or replace knowledge for a session.
+
+```bash
+curl -X POST http://127.0.0.1:8996/api/agent/context/abc123 \
+  -H "Content-Type: application/json" \
+  -d '{"context": "Caller is John Smith, account #12345. Balance: €1,234.56."}'
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `context` | yes | string | Knowledge text to inject. Sanitized via `safe_text()`. |
+
+Returns `{"ok": true, "session_id": "abc123"}`. Returns HTTP 400 if `context` is empty. Publishes `agent.context_injected` event.
+
+Each POST **replaces** the previous knowledge — there is one knowledge slot per session. To update, just POST again with the new text.
+
+**`DELETE /api/agent/context/{session_id}`** — Clear injected knowledge for a session.
+
+```bash
+curl -X DELETE http://127.0.0.1:8996/api/agent/context/abc123
+```
+
+Returns `{"ok": true, "session_id": "abc123"}`. Publishes `agent.context_cleared` event. Knowledge is also automatically cleared when a session is reset.
+
+### Agent Call State API
+
+**`GET /api/agent/sessions`** — List all active session IDs.
+
+Returns a JSON array of session ID strings:
+```json
+["abc123", "def456"]
+```
+
+**`GET /api/agent/call/{sid}`** — Full call state for a session. Useful for agents to understand context before taking over.
+
+```json
+{
+  "session_id": "abc123",
+  "history": [
+    {"role": "user", "content": "Hi, I need help with my account."},
+    {"role": "assistant", "content": "Sure! What's your account number?"}
+  ],
+  "turn_count": 1,
+  "instructions": {
+    "base": "You are a concise, friendly real-time voice assistant.",
+    "session": "",
+    "pending_turn": ""
+  },
+  "agent_takeover": false,
+  "created_at": null
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `history` | Full conversation history (recent verbatim messages) |
+| `turn_count` | Number of completed turns |
+| `instructions` | Current instruction layers (base, session override, pending one-shot turn supplement) |
+| `agent_takeover` | `true` if an agent has taken over LLM control for this session |
+| `created_at` | Session creation timestamp (if persisted) or `null` |
+
 ### Dial
 
 `POST /api/call/dial` sends an ADB broadcast to the phone's `CallCommandReceiver`:
@@ -584,7 +783,7 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 
 **`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
 
-Allowed keys: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`.
+Allowed keys: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `tts_voice`, `tts_speed`.
 
 Blocked from agents: `auth_passphrase`, `auth_*`, `caller_allowlist`, `caller_blocklist`, `unknown_callers_allowed`. These can only be changed via `POST /api/config/call` (control center).
 
