@@ -38,6 +38,9 @@ _LAST_ACTIVITY: dict[str, float] = {}
 # Per-session asyncio locks for concurrent access coordination
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 
+# Pending TTS inject queue: {session_id: [{"text": str, "audio_base64": str}, ...]}
+_INJECT_QUEUE: dict[str, list[dict[str, str]]] = {}
+
 # Stale session TTL in seconds (no activity → auto-end)
 _SESSION_TTL = 300  # 5 minutes
 
@@ -63,6 +66,22 @@ def bump_generation(session_id: str) -> int:
     return _GENERATION[session_id]
 
 
+def queue_inject(session_id: str, text: str, audio_base64: str) -> None:
+    """Queue a TTS inject for delivery on next /api/turn poll."""
+    _INJECT_QUEUE.setdefault(session_id, []).append({
+        "text": text,
+        "audio_base64": audio_base64,
+    })
+
+
+def drain_inject(session_id: str) -> dict[str, str] | None:
+    """Pop the next pending inject for a session, or None if empty."""
+    q = _INJECT_QUEUE.get(session_id)
+    if q:
+        return q.pop(0)
+    return None
+
+
 def get_or_create(session_id: str | None = None) -> str:
     if not session_id:
         session_id = uuid.uuid4().hex
@@ -86,6 +105,7 @@ def reset(session_id: str) -> str:
     _SESSION_LOCKS.pop(session_id, None)
     _ENDED.pop(session_id, None)
     _LAST_ACTIVITY.pop(session_id, None)
+    _INJECT_QUEUE.pop(session_id, None)
     # Also clean up agent knowledge for this session
     import instruction_store
     instruction_store.clear_agent_knowledge(session_id)

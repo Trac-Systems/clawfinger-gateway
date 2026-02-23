@@ -114,6 +114,14 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
         <button onclick="doInject()">Inject</button>
       </div>
       <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Inject knowledge/context:</label>
+      <textarea id="context-text" placeholder="Knowledge text the LLM will see before each turn..."></textarea>
+      <div class="row">
+        <input id="context-sid" placeholder="session_id (optional)" style="flex:1">
+        <button onclick="doContextSet()">Set</button>
+        <button class="secondary" onclick="doContextClear()">Clear</button>
+      </div>
+      <hr style="border-color:var(--border);margin:12px 0">
       <label style="font-size:12px;color:var(--fg2)">Force reply (skip ASR+LLM):</label>
       <textarea id="force-text" placeholder="Text to TTS directly..."></textarea>
       <div class="row">
@@ -440,6 +448,29 @@ async function doInject() {
   document.getElementById('inject-text').value = '';
 }
 
+async function doContextSet() {
+  const text = document.getElementById('context-text').value.trim();
+  const sid = document.getElementById('context-sid').value.trim();
+  if (!text) return;
+  const url = sid ? `${BASE}/api/agent/context/${sid}` : `${BASE}/api/agent/context/_active`;
+  const res = await fetch(url, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({context: text})
+  });
+  const data = await res.json();
+  if (data.ok) addMonitorLine(`[context] set for ${data.session_id || sid}`, 'meta');
+  else addMonitorLine(`[context] failed: ${data.detail || 'error'}`, 'meta');
+}
+async function doContextClear() {
+  const sid = document.getElementById('context-sid').value.trim();
+  const url = sid ? `${BASE}/api/agent/context/${sid}` : `${BASE}/api/agent/context/_active`;
+  const res = await fetch(url, {method: 'DELETE'});
+  const data = await res.json();
+  if (data.ok) {
+    addMonitorLine(`[context] cleared for ${data.session_id || sid}`, 'meta');
+    document.getElementById('context-text').value = '';
+  }
+}
 async function doForceReply() {
   const text = document.getElementById('force-text').value.trim();
   if (!text) return;

@@ -185,6 +185,22 @@ async def api_turn(
     for stale_sid in stale:
         await bus.publish("session.ended", {"session_id": stale_sid, "reason": "stale"}, session_id=stale_sid)
 
+    # --- Pending TTS inject? Return it immediately, skip ASR/LLM ---
+    pending = session_store.drain_inject(sid)
+    if pending:
+        await bus.publish("turn.started", {"session_id": sid}, session_id=sid)
+        await bus.publish("turn.reply", {"reply": pending["text"]}, session_id=sid)
+        await bus.publish("turn.complete", {
+            "metrics": {"asr_ms": 0, "llm_ms": 0, "tts_ms": 0, "total_ms": 0},
+            "transcript": "", "reply": pending["text"], "model": "inject",
+        }, session_id=sid)
+        return JSONResponse({
+            "ok": True, "session_id": sid, "transcript": "",
+            "reply": pending["text"], "audio_base64": pending["audio_base64"],
+            "asr_ms": 0, "llm_ms": 0, "tts_ms": 0, "total_ms": 0,
+            "model": "inject",
+        })
+
     start = time.perf_counter()
     _CALL_COUNT += 1
 
@@ -312,21 +328,22 @@ async def api_turn(
                     async with session_store.get_lock(sid):
                         # 1. Master instructions (never compacted)
                         system_prompt = instruction_store.build_system_prompt(sid)
+
+                        # 2. Agent injected knowledge — merged into system prompt for maximum weight
+                        knowledge = instruction_store.get_agent_knowledge(sid)
+                        if knowledge:
+                            system_prompt += f"\n\nIMPORTANT — use the following facts when answering:\n{knowledge}"
+
                         messages = [{"role": "system", "content": system_prompt}]
 
-                        # 2. Compacted summary of older conversation (if any)
+                        # 3. Compacted summary of older conversation (if any)
                         summary = session_store.get_summary(sid)
                         if summary:
                             messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
 
-                        # 3. Recent history (verbatim)
+                        # 4. Recent history (verbatim)
                         history = session_store.get_history(sid)
                         messages.extend(history)
-
-                        # 4. Agent injected knowledge (if any)
-                        knowledge = instruction_store.get_agent_knowledge(sid)
-                        if knowledge:
-                            messages.append({"role": "system", "content": f"Context from agent:\n{knowledge}"})
 
                         # 5. Current user turn
                         messages.append({"role": "user", "content": transcript})
@@ -440,19 +457,28 @@ async def update_config(request: Request) -> JSONResponse:
 
 @app.post("/api/call/inject")
 async def call_inject(request: Request) -> JSONResponse:
-    """Inject a TTS message into the event stream (for UI or agent)."""
+    """Inject a TTS message into the active call. Queued for next /api/turn poll."""
     body = await request.json()
     text = voice_pipeline.safe_text(str(body.get("text", "")))
     session_id = str(body.get("session_id", ""))
     if not text:
         raise HTTPException(status_code=400, detail="text required")
+    # If no session specified, pick first active session
+    if not session_id:
+        active = list(session_store.active_sessions().keys())
+        if active:
+            session_id = active[0]
+    if not session_id:
+        raise HTTPException(status_code=400, detail="no active session")
     audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, text)
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    session_store.queue_inject(session_id, text, audio_b64)
     await bus.publish("agent.inject", {
         "text": text,
-        "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        "audio_base64": audio_b64,
         "tts_ms": round(tts_ms, 1),
     }, session_id=session_id)
-    return JSONResponse({"ok": True, "tts_ms": round(tts_ms, 1)})
+    return JSONResponse({"ok": True, "tts_ms": round(tts_ms, 1), "session_id": session_id})
 
 
 # ---------------------------------------------------------------------------
@@ -585,11 +611,17 @@ async def agent_ws(ws: WebSocket) -> None:
             elif msg_type == "inject":
                 text = voice_pipeline.safe_text(str(msg.get("text", "")))
                 sid = str(msg.get("session_id", ""))
-                if text:
+                if not sid:
+                    active = list(session_store.active_sessions().keys())
+                    if active:
+                        sid = active[0]
+                if text and sid:
                     audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, text)
+                    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+                    session_store.queue_inject(sid, text, audio_b64)
                     await bus.publish("agent.inject", {
                         "text": text,
-                        "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+                        "audio_base64": audio_b64,
                         "tts_ms": round(tts_ms, 1),
                     }, session_id=sid)
 
@@ -683,13 +715,21 @@ async def agent_inject_rest(request: Request) -> JSONResponse:
     session_id = str(body.get("session_id", ""))
     if not text:
         raise HTTPException(status_code=400, detail="text required")
+    if not session_id:
+        active = list(session_store.active_sessions().keys())
+        if active:
+            session_id = active[0]
+    if not session_id:
+        raise HTTPException(status_code=400, detail="no active session")
     audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, text)
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    session_store.queue_inject(session_id, text, audio_b64)
     await bus.publish("agent.inject", {
         "text": text,
-        "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        "audio_base64": audio_b64,
         "tts_ms": round(tts_ms, 1),
     }, session_id=session_id)
-    return JSONResponse({"ok": True, "tts_ms": round(tts_ms, 1)})
+    return JSONResponse({"ok": True, "tts_ms": round(tts_ms, 1), "session_id": session_id})
 
 
 @app.get("/api/agent/sessions")
@@ -709,8 +749,19 @@ async def agent_release_rest(request: Request) -> JSONResponse:
     return JSONResponse({"ok": False, "detail": "Use WebSocket /api/agent/ws for release"})
 
 
+def _resolve_session(session_id: str) -> str:
+    """Resolve '_active' to first active session, or return as-is."""
+    if session_id == "_active":
+        active = list(session_store.active_sessions().keys())
+        if not active:
+            raise HTTPException(status_code=404, detail="no active session")
+        return active[0]
+    return session_id
+
+
 @app.get("/api/agent/context/{session_id}")
 async def get_agent_context(session_id: str) -> JSONResponse:
+    session_id = _resolve_session(session_id)
     knowledge = instruction_store.get_agent_knowledge(session_id)
     return JSONResponse({
         "session_id": session_id,
@@ -721,6 +772,7 @@ async def get_agent_context(session_id: str) -> JSONResponse:
 
 @app.post("/api/agent/context/{session_id}")
 async def set_agent_context(session_id: str, request: Request) -> JSONResponse:
+    session_id = _resolve_session(session_id)
     body = await request.json()
     context = voice_pipeline.safe_text(str(body.get("context", "")))
     if not context:
@@ -733,6 +785,7 @@ async def set_agent_context(session_id: str, request: Request) -> JSONResponse:
 
 @app.delete("/api/agent/context/{session_id}")
 async def clear_agent_context(session_id: str) -> JSONResponse:
+    session_id = _resolve_session(session_id)
     async with session_store.get_lock(session_id):
         instruction_store.clear_agent_knowledge(session_id)
     await bus.publish("agent.context_cleared", {"session_id": session_id}, session_id=session_id)
