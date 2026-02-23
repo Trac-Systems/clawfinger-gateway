@@ -41,12 +41,26 @@ _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 # Stale session TTL in seconds (no activity → auto-end)
 _SESSION_TTL = 300  # 5 minutes
 
+# Session generation counter — bumped on reset to invalidate in-flight turns
+_GENERATION: dict[str, int] = {}
+
 
 def get_lock(session_id: str) -> asyncio.Lock:
     """Return a per-session asyncio lock, creating if needed."""
     if session_id not in _SESSION_LOCKS:
         _SESSION_LOCKS[session_id] = asyncio.Lock()
     return _SESSION_LOCKS[session_id]
+
+
+def get_generation(session_id: str) -> int:
+    """Return current generation counter for a session."""
+    return _GENERATION.get(session_id, 0)
+
+
+def bump_generation(session_id: str) -> int:
+    """Increment generation counter (invalidates in-flight turns). Returns new value."""
+    _GENERATION[session_id] = _GENERATION.get(session_id, 0) + 1
+    return _GENERATION[session_id]
 
 
 def get_or_create(session_id: str | None = None) -> str:
@@ -63,6 +77,7 @@ def get_or_create(session_id: str | None = None) -> str:
 
 
 def reset(session_id: str) -> str:
+    bump_generation(session_id)  # invalidate any in-flight turns
     _HISTORY.pop(session_id, None)
     _META.pop(session_id, None)
     _CALLER_INFO.pop(session_id, None)

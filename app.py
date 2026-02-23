@@ -134,6 +134,9 @@ async def api_turn(
         session_store.reset(sid)
         sid = session_store.get_or_create(sid)
 
+    # Snapshot generation — if it changes mid-turn, this turn is stale
+    turn_gen = session_store.get_generation(sid)
+
     cfg = config.load()
 
     # --- Caller info ---
@@ -336,8 +339,19 @@ async def api_turn(
 
         await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
 
+        # --- Stale turn check: abort if session was reset while we were processing ---
+        if session_store.get_generation(sid) != turn_gen:
+            await bus.publish("turn.stale", {"session_id": sid, "reason": "generation_changed"}, session_id=sid)
+            return JSONResponse({"ok": False, "session_id": sid, "stale": True, "detail": "session reset during turn"})
+
         # --- TTS ---
         audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, reply)
+
+        # Check again after TTS (synthesis can be slow)
+        if session_store.get_generation(sid) != turn_gen:
+            await bus.publish("turn.stale", {"session_id": sid, "reason": "generation_changed"}, session_id=sid)
+            return JSONResponse({"ok": False, "session_id": sid, "stale": True, "detail": "session reset during turn"})
+
         total_ms = (time.perf_counter() - start) * 1000
 
         metrics = {
