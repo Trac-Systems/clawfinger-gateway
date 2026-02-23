@@ -33,7 +33,13 @@ Add to `~/.openclaw/openclaw.json`:
 }
 ```
 
-Restart the OpenClaw gateway after adding the config.
+Then install the plugin's dependencies and restart:
+
+```bash
+cd /path/to/gateway/openclaw/clawfinger
+npm install
+openclaw gateway restart
+```
 
 ## Available Tools
 
