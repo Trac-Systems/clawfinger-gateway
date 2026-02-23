@@ -93,6 +93,40 @@ The plugin maintains a persistent WebSocket connection to the gateway at `/api/a
 
 The bridge starts automatically when the plugin loads and stops when it unloads.
 
+## WS Event Envelope Format
+
+**All events from the gateway use a nested envelope.** The top-level JSON has `type`, `timestamp`, `session_id`, and a `data` object containing the event-specific fields:
+
+```json
+{
+  "type": "turn.transcript",
+  "timestamp": 1708700000.123,
+  "session_id": "abc123def456",
+  "data": {
+    "transcript": "what the caller actually said"
+  }
+}
+```
+
+**Common event payloads** (fields inside `data`):
+
+| Event | `data` fields |
+|-------|---------------|
+| `turn.started` | `session_id` |
+| `turn.transcript` | `transcript` |
+| `turn.reply` | `reply` |
+| `turn.complete` | `metrics`, `transcript`, `reply`, `model` |
+| `turn.request` | `session_id`, `transcript`, `request_id` (takeover only) |
+| `turn.stale` | `session_id`, `reason` |
+| `turn.error` | `error` |
+| `turn.authenticated` | `session_id` |
+| `turn.auth_failed` | `session_id`, `attempt` |
+| `turn.caller_rejected` | `number`, `reason` |
+| `agent.connected` | *(empty)* |
+| `config.updated` | `key`, `value` |
+
+**Important:** Always read event-specific fields from `event.data`, not from the top level. For example, to get the transcript text: `event.data.transcript`, **not** `event.transcript`.
+
 ## Takeover Lifecycle
 
 1. **Observe** — Use `clawfinger_status` and `clawfinger_sessions` to see active calls.
