@@ -8,7 +8,11 @@ description: Local voice gateway for Clawfinger. Use this skill when installing,
 > **Platform**: macOS and Linux. Not compatible with Windows.
 
 > **Repo**: [Trac-Systems/clawfinger-gateway](https://github.com/Trac-Systems/clawfinger-gateway/)
-> **Companion repo**: [Trac-Systems/clawfinger-app](https://github.com/Trac-Systems/clawfinger-app/) — the Android phone app. Set up the phone FIRST (root, install app), then come here for the gateway.
+> **Companion repo**: [Trac-Systems/clawfinger-app](https://github.com/Trac-Systems/clawfinger-app/) — the Android phone app. Set up the phone FIRST (root, install app), then come here for the gateway. Ignore this if you are an agent that just wants to use an already installed & running gateway/app stack!
+
+## Important
+
+If you are an agent that only needs to use a gateway, then skip all installation instructions and focus on how to use the gateway! (e.g. OpenClaw, zeroClaw, etc.)
 
 ## What This Is
 
@@ -33,8 +37,9 @@ The gateway MUST only bind to `127.0.0.1`. Never use `0.0.0.0` or any network-fa
 
 ## Prerequisites
 
-- Python 3.12+ (tested on 3.13.5)
+- Python 3.12+ (tested on 3.13.5, 3.13.12)
 - ADB (Android Debug Bridge) for phone connection
+- **ffmpeg** — required by mlx_audio for audio format handling (`brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Linux)
 - ~4GB disk for models, ~500MB for venv
 - **macOS (Apple Silicon)**: MLX-based inference out of the box — no extra setup
 - **Linux**: Requires separate ASR/TTS server and LLM server — see "Linux Setup" below
@@ -66,10 +71,13 @@ pip install 'misaki==0.7.0' num2words spacy phonemizer mecab-python3 unidic-lite
 
 ### Step 3: Download models
 
-All models are cached in `.models/` via `HF_HOME`. Download them before first run to avoid cold-start delays:
+All models are cached in `.models/` via `HF_HOME`. Download them before first run to avoid cold-start delays.
+
+**Speed up downloads**: Set `HF_TOKEN` to a HuggingFace access token for higher rate limits and faster parallel downloads. Without a token, downloads are throttled and can be very slow (~4 GB of models total). Create a token at https://huggingface.co/settings/tokens (read access is sufficient).
 
 ```bash
 export HF_HOME="$(pwd)/.models"
+export HF_TOKEN="hf_YOUR_TOKEN_HERE"  # optional but recommended — much faster downloads
 source .venv/bin/activate
 python3 -c "
 from huggingface_hub import snapshot_download
@@ -107,7 +115,11 @@ cp config.example.json config.json
 - `llm_base_url`: Empty = local MLX. Set to an OpenAI-compatible base URL (e.g. `http://localhost:11434/v1`) for remote inference.
 - `llm_api_key`: Bearer token for remote endpoint (empty = no auth).
 - `llm_top_p`, `llm_top_k`, `llm_repeat_penalty`, `llm_stop`: Generation parameters — adjustable at runtime via the control center LLM Settings panel or `POST /api/config/llm`.
+- `tts_voice`: Kokoro voice ID (e.g. `af_heart`, `am_michael`). See `GET /api/config/tts` for the full list of available voices grouped by category.
 - `tts_speed`: 1.2 is natural cadence for Kokoro. Lower = slower speech.
+- `llm_top_p_enabled`, `llm_top_k_enabled`: Boolean flags to enable/disable sending `top_p` / `top_k` to the model. Default: both `true`. Useful when remote APIs don't support certain params.
+- `llm_context_tokens`: Total context window size in tokens. 0 = no token-based limit (use `max_history_turns` only). When set, history compaction also respects this budget.
+- All config changes made via the control center or API are saved to `config.json` automatically and take effect immediately. LLM model changes are hot-loaded on the next turn — no restart needed.
 - All settings can be overridden via env vars: `GATEWAY_PORT=9000`, `GATEWAY_BEARER_TOKEN=xyz`, etc.
 
 **Call policy settings** (gateway is the single source of truth — phone fetches these at each call start):
@@ -440,6 +452,9 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 | `GET` | `/api/sessions` | List persisted sessions |
 | `GET` | `/api/sessions/{id}` | Full session detail with turn-by-turn transcript |
 | `POST` | `/api/config` | Hot-reload config from disk |
+| `GET` | `/api/config/tts` | Current TTS settings + available voices |
+| `POST` | `/api/config/tts` | Update voice, speed |
+| `POST` | `/api/tts/preview` | Preview TTS voice with sample audio |
 | `GET` | `/api/config/llm` | Current LLM generation params |
 | `POST` | `/api/config/llm` | Hot-update LLM params — `{"temperature": 0.5, "top_p": 0.9, ...}` |
 | `GET` | `/api/config/call` | Current call policy + security settings |
@@ -512,10 +527,20 @@ Three-layer instruction system controlling the LLM system prompt:
 | `POST` | `/api/instructions/{sid}/turn` | Set one-shot per-turn supplement (consumed after next turn) |
 | `DELETE` | `/api/instructions/{sid}` | Clear per-session instruction |
 
-**Prompt assembly** (`instruction_store.build_system_prompt`):
-1. Session instruction wins over base; base falls back to `config.json`'s `llm_system_prompt` if unset
-2. Per-turn supplement is appended with `\n\n` separator and consumed after one use
-3. If the assembled prompt exceeds 1500 characters, it is automatically compacted via an LLM summarization call (cached by content hash)
+**Prompt assembly** (per turn):
+1. **System instruction** (from config or `/api/instructions`) — never compacted, always in full. Session instruction wins over base; base falls back to `config.json`'s `llm_system_prompt` if unset. Per-turn supplement is appended with `\n\n` separator and consumed after one use.
+2. **Summary of earlier conversation** (if history was compacted by LLM summarization)
+3. **Recent conversation history** (verbatim user/assistant pairs)
+4. **Agent injected knowledge** (if any — see Agent Context Injection below)
+5. **Current user transcript**
+
+### Conversation History Compaction
+
+When conversation history exceeds `max_history_turns`, older messages are summarized by the LLM and replaced with a compact summary. The summary is injected as a system message before the recent verbatim history. This preserves key facts (caller identity, decisions, commitments) while keeping the context window within budget. The summary is updated each time compaction triggers. If `llm_context_tokens` is set, the token budget is also enforced by shrinking the number of kept messages.
+
+### Agent Context Injection
+
+Agents can inject knowledge into a session that persists until cleared. Injected knowledge appears as a system message right before the current user turn, so the LLM has it fresh. Each `inject_context` call **replaces** the previous knowledge for that session (one slot per session). Use the REST or WebSocket endpoints below.
 
 ### Dial
 
@@ -536,6 +561,9 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `POST` | `/api/agent/inject` | REST inject — `{"text": "...", "session_id": "..."}` |
 | `GET` | `/api/agent/sessions` | List active session IDs |
 | `GET` | `/api/agent/call/{sid}` | Full call state — history, instructions, turn count, takeover status |
+| `GET` | `/api/agent/context/{sid}` | Read injected agent knowledge |
+| `POST` | `/api/agent/context/{sid}` | Inject/replace agent knowledge — `{"context": "..."}` |
+| `DELETE` | `/api/agent/context/{sid}` | Clear agent knowledge |
 
 **Agent WebSocket protocol** — agent sends JSON messages:
 
@@ -548,9 +576,11 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `set_call_config` | `config` | Update call policy settings (non-security subset only) |
 | `dial` | `number` | Dial outbound call |
 | `get_call_state` | `session_id` | Query full call state (history, instructions, takeover status) |
+| `inject_context` | `session_id`, `context` | Inject/replace agent knowledge for a session |
+| `clear_context` | `session_id` | Clear injected agent knowledge |
 | `ping` | — | Heartbeat |
 
-**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `call_state`, `pong`.
+**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `pong`.
 
 **`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
 
@@ -560,7 +590,7 @@ Blocked from agents: `auth_passphrase`, `auth_*`, `caller_allowlist`, `caller_bl
 
 During takeover, gateway sends `{"type": "turn.request", "session_id": "...", "transcript": "..."}` and expects `{"reply": "..."}` within 30s.
 
-Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `turn.caller_rejected`, `turn.authenticated`, `turn.auth_failed`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `instructions.updated`, `config.llm_updated`, `config.call_updated`, `call.dial`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
+Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `turn.caller_rejected`, `turn.authenticated`, `turn.auth_failed`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `agent.context_injected`, `agent.context_cleared`, `instructions.updated`, `config.tts_updated`, `config.llm_updated`, `config.call_updated`, `call.dial`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
 
 ## File Structure
 
@@ -657,7 +687,7 @@ Check `tmp/mlx_audio.log`. Common causes:
 Pre-warm models after startup. First TTS call loads Kokoro (~2s), first ASR call loads Parakeet (~90s on M4 Max). LLM is pre-warmed automatically. Without warming, the greeting turn can take long enough that the caller hangs up before hearing anything. Always warm models after starting services — `bin/start.sh` handles this automatically, but if starting manually, run the warmup commands from the "Pre-warming Models" section above.
 
 ### Config changes not taking effect
-Call `POST /api/config` to hot-reload from `config.json`, or restart the gateway. mlx_audio model changes require mlx_audio restart.
+Config changes made via the control center or API are saved to `config.json` automatically and take effect immediately. LLM model changes are hot-loaded on the next turn — no restart needed. Call `POST /api/config` to force a full reload from disk. mlx_audio model changes require mlx_audio restart.
 
 ## Tested Environment
 

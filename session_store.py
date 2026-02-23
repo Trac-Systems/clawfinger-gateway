@@ -22,6 +22,9 @@ _META: dict[str, dict[str, Any]] = {}
 # Caller info per session: {session_id: {"number": str, "direction": str}}
 _CALLER_INFO: dict[str, dict[str, str]] = {}
 
+# Compacted conversation summaries: {session_id: "Summary text..."}
+_SUMMARY: dict[str, str] = {}
+
 # Passphrase auth state: {session_id: {"validated": bool, "attempts": int}}
 _AUTH_STATE: dict[str, dict[str, Any]] = {}
 
@@ -44,6 +47,10 @@ def reset(session_id: str) -> str:
     _META.pop(session_id, None)
     _CALLER_INFO.pop(session_id, None)
     _AUTH_STATE.pop(session_id, None)
+    _SUMMARY.pop(session_id, None)
+    # Also clean up agent knowledge for this session
+    import instruction_store
+    instruction_store.clear_agent_knowledge(session_id)
     return get_or_create(session_id)
 
 
@@ -53,17 +60,73 @@ def get_history(session_id: str) -> list[dict[str, str]]:
 
 def append(session_id: str, role: str, content: str) -> None:
     _HISTORY.setdefault(session_id, []).append({"role": role, "content": content})
-    trim(session_id)
+    compact(session_id)
 
 
-def trim(session_id: str) -> None:
+def compact(session_id: str) -> None:
+    """Compact conversation history: summarize oldest messages, keep recent ones."""
     history = _HISTORY.get(session_id)
     if not history:
         return
+
     max_turns = config.get("max_history_turns", 8)
-    keep = max(1, max_turns) * 2
-    if len(history) > keep:
-        del history[: len(history) - keep]
+    keep = max(1, max_turns) * 2  # messages to keep verbatim
+
+    # Also check token budget if configured
+    context_limit = config.get("llm_context_tokens", 0)
+    if context_limit > 0:
+        reserve = config.get("llm_max_tokens", 400) + 300  # output + system prompt headroom
+        budget = context_limit - reserve
+        while keep > 2:
+            recent = history[-keep:] if len(history) >= keep else history
+            total_chars = sum(len(m["content"]) for m in recent)
+            if total_chars / 4 <= budget:
+                break
+            keep -= 2
+
+    if len(history) <= keep:
+        return  # nothing to compact
+
+    # Split: old messages to summarize, recent to keep verbatim
+    to_summarize = history[: len(history) - keep]
+    recent = history[len(history) - keep :]
+
+    # Build text to summarize (include prior summary if exists)
+    existing_summary = _SUMMARY.get(session_id, "")
+    summary_input_parts = []
+    if existing_summary:
+        summary_input_parts.append(f"Previous summary:\n{existing_summary}")
+    for msg in to_summarize:
+        role = msg["role"]
+        summary_input_parts.append(f"{role}: {msg['content']}")
+    summary_input = "\n".join(summary_input_parts)
+
+    # Use LLM to summarize
+    import llm_backend
+    messages = [
+        {"role": "system", "content": (
+            "Summarize this phone conversation history into a concise paragraph. "
+            "Preserve: caller identity, key facts mentioned, decisions made, "
+            "questions asked, and any commitments. "
+            "Drop: filler, greetings, repetition. "
+            "Output only the summary, nothing else."
+        )},
+        {"role": "user", "content": summary_input},
+    ]
+    try:
+        summary_text, _, _ = llm_backend.generate(messages)
+        _SUMMARY[session_id] = summary_text
+    except Exception:
+        # If summarization fails, fall back to simple truncation
+        _SUMMARY.pop(session_id, None)
+
+    # Replace history with just the recent messages
+    _HISTORY[session_id] = list(recent)
+
+
+def get_summary(session_id: str) -> str:
+    """Get the compacted summary for a session (empty if none)."""
+    return _SUMMARY.get(session_id, "")
 
 
 def record_turn(session_id: str, turn_data: dict[str, Any]) -> None:

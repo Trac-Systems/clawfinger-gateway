@@ -291,10 +291,25 @@ async def api_turn(
                         agent_ws = None
 
                 if agent_ws is None and not reply:
+                    # 1. Master instructions (never compacted)
                     system_prompt = instruction_store.build_system_prompt(sid)
-                    history = session_store.get_history(sid)
                     messages = [{"role": "system", "content": system_prompt}]
+
+                    # 2. Compacted summary of older conversation (if any)
+                    summary = session_store.get_summary(sid)
+                    if summary:
+                        messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
+
+                    # 3. Recent history (verbatim)
+                    history = session_store.get_history(sid)
                     messages.extend(history)
+
+                    # 4. Agent injected knowledge (if any)
+                    knowledge = instruction_store.get_agent_knowledge(sid)
+                    if knowledge:
+                        messages.append({"role": "system", "content": f"Context from agent:\n{knowledge}"})
+
+                    # 5. Current user turn
                     messages.append({"role": "user", "content": transcript})
 
                     reply, llm_ms, llm_model = await asyncio.to_thread(llm_backend.generate, messages)
@@ -557,6 +572,7 @@ async def agent_ws(ws: WebSocket) -> None:
                 for key, value in msg.get("config", {}).items():
                     if key in AGENT_ALLOWED_CALL_KEYS:
                         cfg[key] = value
+                config.save()
                 await ws.send_json({"type": "set_call_config.ack", "ok": True})
                 await bus.publish("config.call_updated", _call_config_response())
 
@@ -583,6 +599,22 @@ async def agent_ws(ws: WebSocket) -> None:
                     },
                     "agent_takeover": agent_interface.get_takeover_agent(sid) is not None,
                 })
+
+            elif msg_type == "inject_context":
+                sid = str(msg.get("session_id", ""))
+                context = voice_pipeline.safe_text(str(msg.get("context", "")))
+                if sid and context:
+                    instruction_store.set_agent_knowledge(sid, context)
+                    await ws.send_json({"type": "inject_context.ack", "ok": True})
+                    await bus.publish("agent.context_injected", {"session_id": sid}, session_id=sid)
+                else:
+                    await ws.send_json({"type": "inject_context.ack", "ok": False})
+
+            elif msg_type == "clear_context":
+                sid = str(msg.get("session_id", ""))
+                instruction_store.clear_agent_knowledge(sid)
+                await ws.send_json({"type": "clear_context.ack", "ok": True})
+                await bus.publish("agent.context_cleared", {"session_id": sid}, session_id=sid)
 
             elif msg_type == "ping":
                 await ws.send_json({"type": "pong"})
@@ -626,13 +658,128 @@ async def agent_release_rest(request: Request) -> JSONResponse:
     return JSONResponse({"ok": False, "detail": "Use WebSocket /api/agent/ws for release"})
 
 
+@app.get("/api/agent/context/{session_id}")
+async def get_agent_context(session_id: str) -> JSONResponse:
+    knowledge = instruction_store.get_agent_knowledge(session_id)
+    return JSONResponse({
+        "session_id": session_id,
+        "knowledge": knowledge,
+        "has_knowledge": bool(knowledge),
+    })
+
+
+@app.post("/api/agent/context/{session_id}")
+async def set_agent_context(session_id: str, request: Request) -> JSONResponse:
+    body = await request.json()
+    context = voice_pipeline.safe_text(str(body.get("context", "")))
+    if not context:
+        raise HTTPException(status_code=400, detail="context is required")
+    instruction_store.set_agent_knowledge(session_id, context)
+    await bus.publish("agent.context_injected", {"session_id": session_id}, session_id=session_id)
+    return JSONResponse({"ok": True, "session_id": session_id})
+
+
+@app.delete("/api/agent/context/{session_id}")
+async def clear_agent_context(session_id: str) -> JSONResponse:
+    instruction_store.clear_agent_knowledge(session_id)
+    await bus.publish("agent.context_cleared", {"session_id": session_id}, session_id=session_id)
+    return JSONResponse({"ok": True, "session_id": session_id})
+
+
+# ---------------------------------------------------------------------------
+# TTS config endpoints
+# ---------------------------------------------------------------------------
+
+_KOKORO_VOICES = {
+    "American Female": [
+        "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
+        "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+    ],
+    "American Male": [
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+        "am_michael", "am_onyx", "am_puck", "am_santa",
+    ],
+    "British Female": ["bf_alice", "bf_emma", "bf_isabella", "bf_lily"],
+    "British Male": ["bm_daniel", "bm_fable", "bm_george", "bm_lewis"],
+}
+
+_TTS_ALIAS = {"voice": "tts_voice", "speed": "tts_speed"}
+
+
+def _tts_config_response() -> dict:
+    cfg = config.load()
+    model = cfg.get("tts_model", "")
+    is_kokoro = "kokoro" in model.lower()
+    return {
+        "voice": cfg.get("tts_voice", "af_heart"),
+        "speed": cfg.get("tts_speed", 1.2),
+        "model": model,
+        "voices": _KOKORO_VOICES if is_kokoro else {},
+    }
+
+
+@app.get("/api/config/tts")
+async def get_tts_config() -> JSONResponse:
+    return JSONResponse(_tts_config_response())
+
+
+@app.post("/api/config/tts")
+async def update_tts_config(request: Request) -> JSONResponse:
+    body = await request.json()
+    cfg = config.load()
+    for body_key, value in body.items():
+        cfg_key = _TTS_ALIAS.get(body_key, body_key)
+        if cfg_key in {"tts_voice", "tts_speed"}:
+            cfg[cfg_key] = value
+    config.save()
+    resp = _tts_config_response()
+    await bus.publish("config.tts_updated", resp)
+    return JSONResponse({"ok": True, **resp})
+
+
+@app.post("/api/tts/preview")
+async def tts_preview(request: Request) -> JSONResponse:
+    body = await request.json()
+    text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hello, this is a voice preview."
+    preview_voice = str(body.get("voice", "")) or config.get("tts_voice", "af_heart")
+    preview_speed = float(body.get("speed", 0)) or config.get("tts_speed", 1.2)
+
+    cfg = config.load()
+    mlx_base = cfg["mlx_audio_base"].rstrip("/")
+    payload = {
+        "model": cfg["tts_model"],
+        "input": voice_pipeline.trim_for_tts(text),
+        "voice": preview_voice,
+        "speed": preview_speed,
+        "response_format": "wav",
+    }
+
+    import httpx as _httpx
+    response = await asyncio.to_thread(
+        lambda: _httpx.post(f"{mlx_base}/v1/audio/speech", json=payload, timeout=180)
+    )
+    response.raise_for_status()
+
+    audio_b64 = base64.b64encode(response.content).decode("ascii")
+    return JSONResponse({
+        "ok": True,
+        "audio_base64": audio_b64,
+        "voice": preview_voice,
+        "speed": preview_speed,
+    })
+
+
 # ---------------------------------------------------------------------------
 # LLM config endpoints
 # ---------------------------------------------------------------------------
 
-_LLM_PARAM_KEYS = {"llm_max_tokens", "llm_temperature", "llm_top_p", "llm_top_k", "llm_repeat_penalty", "llm_stop"}
+_LLM_PARAM_KEYS = {
+    "llm_max_tokens", "llm_temperature", "llm_top_p", "llm_top_k",
+    "llm_repeat_penalty", "llm_stop",
+    "llm_top_p_enabled", "llm_top_k_enabled", "llm_context_tokens",
+    "max_history_turns",
+}
 _LLM_IDENTITY_KEYS = {"llm_model", "llm_base_url", "llm_api_key"}
-_LLM_RESTART_REQUIRED = False
 
 # Short aliases accepted by POST body → config key
 _LLM_ALIAS = {
@@ -643,8 +790,12 @@ _LLM_ALIAS = {
     "temperature": "llm_temperature",
     "top_p": "llm_top_p",
     "top_k": "llm_top_k",
+    "top_p_enabled": "llm_top_p_enabled",
+    "top_k_enabled": "llm_top_k_enabled",
     "repeat_penalty": "llm_repeat_penalty",
     "stop": "llm_stop",
+    "context_tokens": "llm_context_tokens",
+    "max_history_turns": "max_history_turns",
 }
 
 
@@ -653,14 +804,18 @@ def _llm_config_response() -> dict:
     return {
         "model": cfg.get("llm_model", ""),
         "base_url": cfg.get("llm_base_url", ""),
+        "has_api_key": bool(cfg.get("llm_api_key", "")),
         "max_tokens": cfg.get("llm_max_tokens", 400),
+        "context_tokens": cfg.get("llm_context_tokens", 0),
+        "max_history_turns": cfg.get("max_history_turns", 8),
         "temperature": cfg.get("llm_temperature", 0.2),
         "top_p": cfg.get("llm_top_p", 1.0),
+        "top_p_enabled": cfg.get("llm_top_p_enabled", True),
         "top_k": cfg.get("llm_top_k", 0),
+        "top_k_enabled": cfg.get("llm_top_k_enabled", True),
         "repeat_penalty": cfg.get("llm_repeat_penalty", 1.0),
         "stop": cfg.get("llm_stop", []),
         "is_local": not cfg.get("llm_base_url"),
-        "restart_required": _LLM_RESTART_REQUIRED,
     }
 
 
@@ -671,19 +826,15 @@ async def get_llm_config() -> JSONResponse:
 
 @app.post("/api/config/llm")
 async def update_llm_config(request: Request) -> JSONResponse:
-    global _LLM_RESTART_REQUIRED
     body = await request.json()
     cfg = config.load()
 
     for body_key, value in body.items():
         cfg_key = _LLM_ALIAS.get(body_key, body_key)
-        if cfg_key in _LLM_PARAM_KEYS:
+        if cfg_key in _LLM_PARAM_KEYS | _LLM_IDENTITY_KEYS:
             cfg[cfg_key] = value
-        elif cfg_key in _LLM_IDENTITY_KEYS:
-            if cfg.get(cfg_key) != value:
-                cfg[cfg_key] = value
-                _LLM_RESTART_REQUIRED = True
 
+    config.save()
     await bus.publish("config.llm_updated", _llm_config_response())
     return JSONResponse({"ok": True, **_llm_config_response()})
 
@@ -706,7 +857,7 @@ _CALL_SECURITY_KEYS = {
     "caller_allowlist", "caller_blocklist", "unknown_callers_allowed",
 }
 
-AGENT_ALLOWED_CALL_KEYS = _CALL_CONFIG_KEYS - _CALL_SECURITY_KEYS
+AGENT_ALLOWED_CALL_KEYS = (_CALL_CONFIG_KEYS - _CALL_SECURITY_KEYS) | {"tts_voice", "tts_speed"}
 
 
 def _call_config_response() -> dict:
@@ -745,6 +896,7 @@ async def update_call_config(request: Request) -> JSONResponse:
     for key, value in body.items():
         if key in _CALL_CONFIG_KEYS:
             cfg[key] = value
+    config.save()
     await bus.publish("config.call_updated", _call_config_response())
     return JSONResponse({"ok": True, **_call_config_response()})
 

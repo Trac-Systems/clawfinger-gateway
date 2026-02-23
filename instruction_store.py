@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import config
 
 _BASE: str = ""
 _SESSION: dict[str, str] = {}
 _TURN: dict[str, str] = {}
-
-_COMPACT_THRESHOLD = 1500  # characters — rough proxy for ~400 tokens
-_COMPACT_CACHE: dict[str, str] = {}  # {md5_hash: compacted_text}
+_AGENT_KNOWLEDGE: dict[str, str] = {}
 
 
 def get_base() -> str:
@@ -51,43 +47,24 @@ def build_system_prompt(sid: str) -> str:
     base = get_session(sid) or get_base()
     turn_extra = pop_turn(sid)
     if turn_extra:
-        raw = base + "\n\n" + turn_extra
-    else:
-        raw = base
-
-    if len(raw) > _COMPACT_THRESHOLD:
-        return _compact(raw)
-    return raw
+        return base + "\n\n" + turn_extra
+    return base
 
 
-def _compact(text: str) -> str:
-    text_hash = hashlib.md5(text.encode()).hexdigest()
-    cached = _COMPACT_CACHE.get(text_hash)
-    if cached:
-        return cached
+# ---------------------------------------------------------------------------
+# Agent knowledge injection
+# ---------------------------------------------------------------------------
 
-    import llm_backend
+def set_agent_knowledge(sid: str, text: str) -> None:
+    _AGENT_KNOWLEDGE[sid] = text
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Compress the following instructions into a concise version. "
-                "Preserve all actionable directives, constraints, and persona details. "
-                "Remove redundancy. Output only the compressed instructions, nothing else."
-            ),
-        },
-        {"role": "user", "content": text},
-    ]
-    compacted, _, _ = llm_backend.generate(messages)
-    _COMPACT_CACHE[text_hash] = compacted
 
-    # Keep cache small
-    if len(_COMPACT_CACHE) > 50:
-        oldest = next(iter(_COMPACT_CACHE))
-        del _COMPACT_CACHE[oldest]
+def get_agent_knowledge(sid: str) -> str:
+    return _AGENT_KNOWLEDGE.get(sid, "")
 
-    return compacted
+
+def clear_agent_knowledge(sid: str) -> None:
+    _AGENT_KNOWLEDGE.pop(sid, None)
 
 
 def snapshot() -> dict:

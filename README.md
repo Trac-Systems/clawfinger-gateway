@@ -12,9 +12,11 @@ A local voice gateway that runs the full **ASR → LLM → TTS** pipeline on App
 
 The gateway also provides:
 
-- **Control Center UI** — web dashboard for live call monitoring, instruction editing, LLM parameter tuning, and session logs
-- **Agent Interface** — WebSocket protocol for external agents to observe calls, take over LLM generation, inject TTS messages, and query call state
-- **Instruction System** — three-layer prompt management (global / per-session / per-turn) with automatic compaction for long instruction chains
+- **Control Center UI** — web dashboard for live call monitoring, instruction editing, LLM parameter tuning, TTS voice selection, and session logs
+- **Agent Interface** — WebSocket protocol for external agents to observe calls, take over LLM generation, inject TTS messages, inject context knowledge, and query call state
+- **TTS Voice Selection** — choose from 50+ Kokoro voices with live preview
+- **Instruction System** — three-layer prompt management (global / per-session / per-turn)
+- **Conversation Compaction** — LLM-based summarization of older conversation history to stay within context budget
 - **Outbound Dialing** — trigger calls on the phone via ADB broadcast
 
 ## Requirements
@@ -62,7 +64,10 @@ The control center is at `http://127.0.0.1:8996`. See [SKILL.md](SKILL.md) for f
 | `GET /api/sessions` | List persisted sessions |
 | `GET /api/sessions/{id}` | Session detail with turn-by-turn transcript |
 | `POST /api/config` | Hot-reload config from disk |
+| `GET/POST /api/config/tts` | View/update TTS voice and speed |
+| `POST /api/tts/preview` | Preview TTS voice with sample audio |
 | `GET/POST /api/config/llm` | View/update LLM generation parameters at runtime |
+| `GET/POST /api/config/call` | View/update call policy + security |
 | `POST /api/call/inject` | Inject TTS message into event stream |
 | `POST /api/call/dial` | Dial outbound call via ADB |
 | `WS /ws/events` | Real-time event stream for UI |
@@ -85,6 +90,9 @@ The control center is at `http://127.0.0.1:8996`. See [SKILL.md](SKILL.md) for f
 | `POST /api/agent/inject` | REST inject — TTS message into call |
 | `GET /api/agent/sessions` | List active session IDs |
 | `GET /api/agent/call/{sid}` | Query call state (history, instructions, metadata) |
+| `GET /api/agent/context/{sid}` | Read injected agent knowledge |
+| `POST /api/agent/context/{sid}` | Inject/replace agent knowledge |
+| `DELETE /api/agent/context/{sid}` | Clear agent knowledge |
 
 ## License
 

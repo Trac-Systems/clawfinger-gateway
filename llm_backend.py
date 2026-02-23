@@ -80,8 +80,10 @@ def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tupl
         "temp": cfg.get("llm_temperature", 0.2),
         "verbose": False,
     }
-    if cfg.get("llm_top_p", 1.0) < 1.0:
+    if cfg.get("llm_top_p_enabled", True) and cfg.get("llm_top_p", 1.0) < 1.0:
         kwargs["top_p"] = cfg["llm_top_p"]
+    if cfg.get("llm_top_k_enabled", True) and cfg.get("llm_top_k", 0) > 0:
+        kwargs["top_k"] = cfg["llm_top_k"]
     if cfg.get("llm_repeat_penalty", 1.0) != 1.0:
         kwargs["repetition_penalty"] = cfg["llm_repeat_penalty"]
 
@@ -121,7 +123,7 @@ def _generate_remote(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tup
         "temperature": cfg.get("llm_temperature", 0.2),
         "stream": False,
     }
-    if cfg.get("llm_top_p", 1.0) < 1.0:
+    if cfg.get("llm_top_p_enabled", True) and cfg.get("llm_top_p", 1.0) < 1.0:
         payload["top_p"] = cfg["llm_top_p"]
     if cfg.get("llm_repeat_penalty", 1.0) != 1.0:
         payload["frequency_penalty"] = cfg["llm_repeat_penalty"] - 1.0

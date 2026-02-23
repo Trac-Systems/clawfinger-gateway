@@ -62,6 +62,16 @@ def _migrate(cfg: dict[str, Any]) -> None:
     cfg.setdefault("llm_repeat_penalty", 1.0)
     cfg.setdefault("llm_stop", [])
 
+    # TTS defaults
+    cfg.setdefault("tts_model", "mlx-community/Kokoro-82M-bf16")
+    cfg.setdefault("tts_voice", "af_heart")
+    cfg.setdefault("tts_speed", 1.2)
+
+    # LLM extended settings
+    cfg.setdefault("llm_top_p_enabled", True)
+    cfg.setdefault("llm_top_k_enabled", True)
+    cfg.setdefault("llm_context_tokens", 0)
+
     # Call policy defaults
     cfg.setdefault("call_auto_answer", True)
     cfg.setdefault("call_auto_answer_delay_ms", 500)
@@ -103,6 +113,15 @@ def reload() -> dict[str, Any]:
     global _LOADED
     _LOADED = {}
     return load()
+
+
+def save() -> None:
+    """Persist current in-memory config to config.json."""
+    if not _LOADED:
+        return
+    with _CFG_PATH.open("w") as f:
+        json.dump(_LOADED, f, indent=2)
+        f.write("\n")
 
 
 def get(key: str, default: Any = None) -> Any:

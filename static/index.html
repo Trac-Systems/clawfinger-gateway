@@ -235,26 +235,55 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
     </div>
   </div>
 
+  <!-- TTS Settings -->
+  <div class="panel">
+    <div class="panel-head">TTS Settings</div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Voice:</label>
+      <select id="tts-voice" style="width:100%"></select>
+
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Speed: <span id="tts-speed-val">1.2</span></label>
+        <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.2" oninput="document.getElementById('tts-speed-val').textContent=this.value">
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <button class="secondary" onclick="doTtsPreview()">Preview</button>
+        <button onclick="applyTtsConfig()">Apply</button>
+        <span id="tts-feedback" style="font-size:11px"></span>
+      </div>
+      <audio id="tts-preview-audio" style="display:none"></audio>
+    </div>
+  </div>
+
   <!-- LLM Settings -->
   <div class="panel">
-    <div class="panel-head">LLM Settings <span id="llm-restart-badge" class="badge" style="display:none;background:rgba(210,153,34,0.2);color:var(--yellow)">restart required</span></div>
+    <div class="panel-head">LLM Settings</div>
     <div class="panel-body">
       <label style="font-size:12px;color:var(--fg2)">Model:</label>
       <input id="llm-model" placeholder="mlx-community/Qwen2.5-1.5B-Instruct-4bit">
       <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">Base URL <span style="font-size:11px">(empty = local MLX)</span>:</label>
       <input id="llm-base-url" placeholder="https://api.openai.com/v1">
-      <div style="font-size:11px;color:var(--fg2);margin-top:2px">Model/URL changes need gateway restart</div>
+      <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">API Key <span style="font-size:11px">(empty = none)</span>:</label>
+      <input id="llm-api-key" type="password" placeholder="sk-...">
+      <div id="llm-api-key-hint" style="font-size:11px;color:var(--fg2);margin-top:2px"></div>
 
       <div style="margin-top:12px">
         <label style="font-size:12px;color:var(--fg2)">Temperature: <span id="llm-temp-val">0.2</span></label>
         <input type="range" id="llm-temperature" min="0" max="2" step="0.05" value="0.2" oninput="document.getElementById('llm-temp-val').textContent=this.value">
       </div>
       <div style="margin-top:8px">
-        <label style="font-size:12px;color:var(--fg2)">Top P: <span id="llm-topp-val">1.0</span></label>
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="llm-top-p-enabled" style="width:auto" checked onchange="document.getElementById('llm-top-p').disabled=!this.checked">
+          Top P: <span id="llm-topp-val">1.0</span>
+        </label>
         <input type="range" id="llm-top-p" min="0" max="1" step="0.05" value="1.0" oninput="document.getElementById('llm-topp-val').textContent=this.value">
       </div>
       <div style="margin-top:8px">
-        <label style="font-size:12px;color:var(--fg2)">Top K:</label>
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="llm-top-k-enabled" style="width:auto" checked onchange="document.getElementById('llm-top-k').disabled=!this.checked">
+          Top K:
+        </label>
         <input type="number" id="llm-top-k" min="0" max="500" value="0" style="width:80px">
       </div>
       <div style="margin-top:8px">
@@ -262,8 +291,16 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
         <input type="range" id="llm-repeat-penalty" min="1" max="2" step="0.05" value="1.0" oninput="document.getElementById('llm-rp-val').textContent=this.value">
       </div>
       <div style="margin-top:8px">
-        <label style="font-size:12px;color:var(--fg2)">Max Tokens:</label>
+        <label style="font-size:12px;color:var(--fg2)">Max Output Tokens:</label>
         <input type="number" id="llm-max-tokens" min="1" max="4096" value="400" style="width:80px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Context Window (tokens) <span style="font-size:11px">(0 = no limit)</span>:</label>
+        <input type="number" id="llm-context-tokens" min="0" max="131072" value="0" style="width:100px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Max History Turns:</label>
+        <input type="number" id="llm-max-history-turns" min="1" max="100" value="8" style="width:80px">
       </div>
       <div style="margin-top:8px">
         <label style="font-size:12px;color:var(--fg2)">Stop sequences <span style="font-size:11px">(comma-separated)</span>:</label>
@@ -348,6 +385,8 @@ function handleEvent(evt) {
     loadStatus();
   } else if (t === 'agent.inject') {
     addMonitorLine(`[inject] ${d.text}`, 'assistant');
+  } else if (t === 'config.tts_updated') {
+    loadTtsConfig();
   } else if (t === 'config.llm_updated') {
     loadLlmConfig();
   } else if (t === 'config.call_updated') {
@@ -651,6 +690,82 @@ async function applySecurity() {
   }
 }
 
+// --- TTS Settings ---
+async function loadTtsConfig() {
+  try {
+    const r = await fetch(`${BASE}/api/config/tts`);
+    const c = await r.json();
+    const sel = document.getElementById('tts-voice');
+    sel.innerHTML = '';
+    const voices = c.voices || {};
+    if (Object.keys(voices).length) {
+      for (const [group, ids] of Object.entries(voices)) {
+        const og = document.createElement('optgroup');
+        og.label = group;
+        for (const id of ids) {
+          const opt = document.createElement('option');
+          opt.value = id; opt.textContent = id;
+          if (id === c.voice) opt.selected = true;
+          og.appendChild(opt);
+        }
+        sel.appendChild(og);
+      }
+    } else {
+      const opt = document.createElement('option');
+      opt.value = c.voice; opt.textContent = c.voice; opt.selected = true;
+      sel.appendChild(opt);
+    }
+    const speedEl = document.getElementById('tts-speed');
+    speedEl.value = c.speed; document.getElementById('tts-speed-val').textContent = c.speed;
+  } catch(e) {}
+}
+
+async function applyTtsConfig() {
+  const fb = document.getElementById('tts-feedback');
+  const body = {
+    voice: document.getElementById('tts-voice').value,
+    speed: parseFloat(document.getElementById('tts-speed').value),
+  };
+  try {
+    const r = await fetch(`${BASE}/api/config/tts`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    fb.style.color = 'var(--green)';
+    fb.textContent = 'Applied';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Failed';
+  }
+}
+
+async function doTtsPreview() {
+  const fb = document.getElementById('tts-feedback');
+  fb.style.color = 'var(--fg2)'; fb.textContent = 'Generating...';
+  try {
+    const r = await fetch(`${BASE}/api/tts/preview`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        voice: document.getElementById('tts-voice').value,
+        speed: parseFloat(document.getElementById('tts-speed').value),
+      })
+    });
+    const j = await r.json();
+    if (j.ok && j.audio_base64) {
+      const audio = document.getElementById('tts-preview-audio');
+      audio.src = 'data:audio/wav;base64,' + j.audio_base64;
+      audio.play();
+      fb.style.color = 'var(--green)'; fb.textContent = 'Playing';
+      setTimeout(() => { fb.textContent = ''; }, 3000);
+    } else {
+      fb.style.color = 'var(--red)'; fb.textContent = 'Preview failed';
+    }
+  } catch(e) {
+    fb.style.color = 'var(--red)'; fb.textContent = 'Failed';
+  }
+}
+
 // --- LLM Settings ---
 async function loadLlmConfig() {
   try {
@@ -658,16 +773,25 @@ async function loadLlmConfig() {
     const c = await r.json();
     document.getElementById('llm-model').value = c.model || '';
     document.getElementById('llm-base-url').value = c.base_url || '';
+    document.getElementById('llm-api-key').value = '';
+    document.getElementById('llm-api-key-hint').textContent = c.has_api_key ? 'API key is set' : '';
     const tempEl = document.getElementById('llm-temperature');
     tempEl.value = c.temperature; document.getElementById('llm-temp-val').textContent = c.temperature;
+    const tpEnabledEl = document.getElementById('llm-top-p-enabled');
+    tpEnabledEl.checked = c.top_p_enabled !== false;
     const tpEl = document.getElementById('llm-top-p');
-    tpEl.value = c.top_p; document.getElementById('llm-topp-val').textContent = c.top_p;
-    document.getElementById('llm-top-k').value = c.top_k;
+    tpEl.value = c.top_p; tpEl.disabled = !tpEnabledEl.checked;
+    document.getElementById('llm-topp-val').textContent = c.top_p;
+    const tkEnabledEl = document.getElementById('llm-top-k-enabled');
+    tkEnabledEl.checked = c.top_k_enabled !== false;
+    const tkEl = document.getElementById('llm-top-k');
+    tkEl.value = c.top_k; tkEl.disabled = !tkEnabledEl.checked;
     const rpEl = document.getElementById('llm-repeat-penalty');
     rpEl.value = c.repeat_penalty; document.getElementById('llm-rp-val').textContent = c.repeat_penalty;
     document.getElementById('llm-max-tokens').value = c.max_tokens;
+    document.getElementById('llm-context-tokens').value = c.context_tokens || 0;
+    document.getElementById('llm-max-history-turns').value = c.max_history_turns || 8;
     document.getElementById('llm-stop').value = (c.stop || []).join(', ');
-    document.getElementById('llm-restart-badge').style.display = c.restart_required ? 'inline' : 'none';
   } catch(e) {}
 }
 
@@ -680,11 +804,17 @@ async function applyLlmConfig() {
     base_url: document.getElementById('llm-base-url').value.trim(),
     temperature: parseFloat(document.getElementById('llm-temperature').value),
     top_p: parseFloat(document.getElementById('llm-top-p').value),
+    top_p_enabled: document.getElementById('llm-top-p-enabled').checked,
     top_k: parseInt(document.getElementById('llm-top-k').value, 10),
+    top_k_enabled: document.getElementById('llm-top-k-enabled').checked,
     repeat_penalty: parseFloat(document.getElementById('llm-repeat-penalty').value),
     max_tokens: parseInt(document.getElementById('llm-max-tokens').value, 10),
+    context_tokens: parseInt(document.getElementById('llm-context-tokens').value, 10),
+    max_history_turns: parseInt(document.getElementById('llm-max-history-turns').value, 10),
     stop: stop,
   };
+  const apiKey = document.getElementById('llm-api-key').value;
+  if (apiKey) body.api_key = apiKey;
   try {
     const r = await fetch(`${BASE}/api/config/llm`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -693,7 +823,8 @@ async function applyLlmConfig() {
     const j = await r.json();
     fb.style.color = 'var(--green)';
     fb.textContent = 'Applied';
-    document.getElementById('llm-restart-badge').style.display = j.restart_required ? 'inline' : 'none';
+    document.getElementById('llm-api-key').value = '';
+    document.getElementById('llm-api-key-hint').textContent = j.has_api_key ? 'API key is set' : '';
     setTimeout(() => { fb.textContent = ''; }, 2000);
   } catch(e) {
     fb.style.color = 'var(--red)';
@@ -707,6 +838,7 @@ loadStatus();
 loadSessions();
 loadInstructions();
 loadCallConfig();
+loadTtsConfig();
 loadLlmConfig();
 setInterval(loadStatus, 30000);
 </script>
