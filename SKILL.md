@@ -16,7 +16,7 @@ Local voice gateway: ASR -> LLM -> TTS pipeline for AI-assisted phone calls. No 
 Installation, configuration, startup, API endpoints, agent WebSocket protocol, instruction system, control center UI.
 
 ### [OpenClaw Plugin](skills/openclaw-clawfinger/SKILL.md)
-OpenClaw plugin for real-time call takeover, injection, context, and observation via the agent WebSocket. Gives OpenClaw agents full access to gateway streams beyond REST.
+OpenClaw plugin for real-time call takeover, injection, context, and observation via the agent WebSocket. Gives OpenClaw agents full access to gateway streams beyond REST. **Includes installation instructions** for wiring the plugin into `~/.openclaw/openclaw.json`.
 
 ### [OpenClaw Ops](skills/openclaw-ops/SKILL.md)
 Operational runbooks for OpenClaw skill-only automation: scheduled checks, webhook triggers, scripted REST operations (dial, inject, policy updates) — no plugin required.
