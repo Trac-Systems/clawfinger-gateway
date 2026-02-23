@@ -1,6 +1,12 @@
 ---
 name: openclaw-clawfinger
 description: OpenClaw plugin for the Clawfinger voice gateway — real-time call takeover, TTS injection, context injection, and live observation via the agent WebSocket bridge. Use this skill to understand the plugin tools and workflows.
+metadata:
+  openclaw:
+    emoji: "\U0001F4DE"
+    skillKey: openclaw-clawfinger
+    requires:
+      - plugin:clawfinger
 ---
 
 # OpenClaw Clawfinger Plugin
