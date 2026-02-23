@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,25 @@ _MIGRATION_MAP = {
     "llm_remote_base_url": "llm_base_url",
     "llm_remote_api_key": "llm_api_key",
 }
+
+
+_ADB_SEARCH_PATHS = [
+    "/opt/homebrew/bin/adb",
+    "/opt/homebrew/Caskroom/android-platform-tools/36.0.2/platform-tools/adb",
+    "/usr/local/bin/adb",
+    "/usr/bin/adb",
+]
+
+
+def _find_adb() -> str:
+    """Auto-discover ADB binary: PATH first, then known locations."""
+    found = shutil.which("adb")
+    if found:
+        return found
+    for path in _ADB_SEARCH_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return "adb"  # fallback to bare name
 
 
 def _cast(value: str, reference: Any) -> Any:
@@ -86,6 +106,10 @@ def _migrate(cfg: dict[str, Any]) -> None:
     cfg.setdefault("auth_passphrase", "")
     cfg.setdefault("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
     cfg.setdefault("auth_max_attempts", 3)
+
+    # ADB path — auto-discover if not set
+    if not cfg.get("adb_path"):
+        cfg["adb_path"] = _find_adb()
 
 
 def load() -> dict[str, Any]:

@@ -470,10 +470,11 @@ async def _do_dial(number: str) -> dict:
     """Send dial command to phone via ADB broadcast."""
     if not number:
         return {"ok": False, "detail": "number required"}
+    adb = config.get("adb_path", "adb")
     # Check ADB connection
     try:
         proc = await asyncio.create_subprocess_exec(
-            "adb", "devices",
+            adb, "devices",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
@@ -486,7 +487,7 @@ async def _do_dial(number: str) -> dict:
     # Send broadcast
     try:
         proc = await asyncio.create_subprocess_exec(
-            "adb", "shell", "am", "broadcast",
+            adb, "shell", "am", "broadcast",
             "-a", "com.tracsystems.phonebridge.CALL_COMMAND",
             "-n", "com.tracsystems.phonebridge/.CallCommandReceiver",
             "--es", "type", "dial",
