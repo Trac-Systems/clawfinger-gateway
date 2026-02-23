@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -28,6 +29,16 @@ _SUMMARY: dict[str, str] = {}
 # Passphrase auth state: {session_id: {"validated": bool, "attempts": int}}
 _AUTH_STATE: dict[str, dict[str, Any]] = {}
 
+# Per-session asyncio locks for concurrent access coordination
+_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def get_lock(session_id: str) -> asyncio.Lock:
+    """Return a per-session asyncio lock, creating if needed."""
+    if session_id not in _SESSION_LOCKS:
+        _SESSION_LOCKS[session_id] = asyncio.Lock()
+    return _SESSION_LOCKS[session_id]
+
 
 def get_or_create(session_id: str | None = None) -> str:
     if not session_id:
@@ -48,6 +59,7 @@ def reset(session_id: str) -> str:
     _CALLER_INFO.pop(session_id, None)
     _AUTH_STATE.pop(session_id, None)
     _SUMMARY.pop(session_id, None)
+    _SESSION_LOCKS.pop(session_id, None)
     # Also clean up agent knowledge for this session
     import instruction_store
     instruction_store.clear_agent_knowledge(session_id)

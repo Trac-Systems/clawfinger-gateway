@@ -1,0 +1,105 @@
+---
+name: clawfinger
+description: Clawfinger voice gateway plugin — real-time call takeover, TTS injection, context injection, and live observation via the agent WebSocket bridge.
+metadata:
+  openclaw:
+    emoji: "\U0001F4DE"
+    skillKey: clawfinger
+    requires:
+      - plugin:clawfinger
+---
+
+# Clawfinger Plugin
+
+Real-time bridge to the Clawfinger voice gateway. Gives you full control over active phone calls: take over the LLM, inject speech, push context, observe transcripts, and manage call policy.
+
+## Available Tools
+
+### Status and Observation
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_status` | Gateway health, active sessions, bridge connection status |
+| `clawfinger_sessions` | List active call session IDs |
+| `clawfinger_call_state` | Full call state for a session: conversation history, instructions, takeover status |
+
+### Call Control
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_dial` | Dial an outbound phone call (phone must be connected via ADB) |
+| `clawfinger_inject` | Inject a TTS message into the active call — text is synthesized and played to the caller |
+| `clawfinger_takeover` | Take over LLM control for a session — you receive transcripts and must provide replies |
+| `clawfinger_release` | Release LLM control back to the local gateway LLM |
+
+### Context and Instructions
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_context_set` | Inject knowledge into a session — the LLM sees this before each user turn. Replaces existing context. |
+| `clawfinger_context_clear` | Clear injected knowledge from a session |
+| `clawfinger_instructions_set` | Set LLM system instructions. Scope: `global`, `session`, or `turn` (one-shot). |
+
+### Configuration
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_call_config_get` | Read call policy: auto-answer, greetings, caller filtering, max duration, auth |
+| `clawfinger_call_config_set` | Update call policy settings (pass only fields to change) |
+
+## WS Bridge
+
+The plugin maintains a persistent WebSocket connection to the gateway at `/api/agent/ws`. The bridge:
+
+- Auto-reconnects with exponential backoff (1s -> 30s max)
+- Sends ping heartbeats every 15s
+- Receives all gateway events (`turn.*`, `agent.*`, `config.*`, etc.)
+- Handles `request_id` correlation for takeover turn replies
+
+The bridge starts automatically when the plugin loads and stops when it unloads.
+
+## Takeover Lifecycle
+
+1. **Observe** — Use `clawfinger_status` and `clawfinger_sessions` to see active calls.
+2. **Inspect** — Use `clawfinger_call_state` to read conversation history and current instructions.
+3. **Prepare** — Optionally use `clawfinger_context_set` to inject knowledge the LLM should have.
+4. **Take over** — Call `clawfinger_takeover` with the session ID. The gateway will now route caller transcripts to you instead of the local LLM.
+5. **Respond** — When you receive a `turn.request` event with a transcript, the bridge sends your reply back with `request_id` correlation for reliable matching.
+6. **Release** — Call `clawfinger_release` to hand control back to the local LLM.
+
+During takeover, if you fail to reply within 30 seconds, the gateway falls back to the local LLM for that turn.
+
+## Example Workflows
+
+### Monitor and inject context
+
+```
+1. clawfinger_status          -> check gateway is healthy
+2. clawfinger_sessions        -> get active session IDs
+3. clawfinger_call_state      -> read conversation history
+4. clawfinger_context_set     -> push relevant knowledge
+   (LLM now has your context for all subsequent turns)
+```
+
+### Full call takeover
+
+```
+1. clawfinger_sessions        -> find the active session
+2. clawfinger_takeover        -> take LLM control
+3. (receive turn.request events, respond with your own text)
+4. clawfinger_release         -> hand back to local LLM
+```
+
+### Outbound call with greeting
+
+```
+1. clawfinger_instructions_set  -> set instructions for the call
+2. clawfinger_dial              -> dial the number
+3. clawfinger_sessions          -> find the new session
+4. clawfinger_context_set       -> push context for the LLM
+```
+
+## Slash Command
+
+`/clawfinger status` — Quick gateway health check
+`/clawfinger dial <number>` — Dial a phone number

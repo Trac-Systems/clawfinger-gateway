@@ -273,46 +273,42 @@ async def api_turn(
                 # Check if agent has taken over LLM for this session
                 agent_ws = agent_interface.get_takeover_agent(sid)
                 if agent_ws is not None:
-                    # Route to agent — send transcript, wait for reply
-                    try:
-                        await agent_ws.send_json({
-                            "type": "turn.request",
-                            "session_id": sid,
-                            "transcript": transcript,
-                        })
-                        # Wait for agent reply (timeout 30s)
-                        raw = await asyncio.wait_for(agent_ws.receive_text(), timeout=30)
-                        msg = json.loads(raw)
-                        reply = voice_pipeline.safe_text(str(msg.get("reply", "")))
+                    # Route to agent via single-reader pattern (request_id correlation)
+                    reply_text = await agent_interface.send_turn_request(
+                        agent_ws, sid, transcript,
+                    )
+                    if reply_text is not None:
+                        reply = voice_pipeline.safe_text(reply_text)
                         llm_ms = 0.0
                         llm_model = "agent"
-                    except Exception:
-                        # Agent failed — fall back to local LLM
+                    else:
+                        # Agent failed / timed out — fall back to local LLM
                         agent_ws = None
 
                 if agent_ws is None and not reply:
-                    # 1. Master instructions (never compacted)
-                    system_prompt = instruction_store.build_system_prompt(sid)
-                    messages = [{"role": "system", "content": system_prompt}]
+                    async with session_store.get_lock(sid):
+                        # 1. Master instructions (never compacted)
+                        system_prompt = instruction_store.build_system_prompt(sid)
+                        messages = [{"role": "system", "content": system_prompt}]
 
-                    # 2. Compacted summary of older conversation (if any)
-                    summary = session_store.get_summary(sid)
-                    if summary:
-                        messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
+                        # 2. Compacted summary of older conversation (if any)
+                        summary = session_store.get_summary(sid)
+                        if summary:
+                            messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
 
-                    # 3. Recent history (verbatim)
-                    history = session_store.get_history(sid)
-                    messages.extend(history)
+                        # 3. Recent history (verbatim)
+                        history = session_store.get_history(sid)
+                        messages.extend(history)
 
-                    # 4. Agent injected knowledge (if any)
-                    knowledge = instruction_store.get_agent_knowledge(sid)
-                    if knowledge:
-                        messages.append({"role": "system", "content": f"Context from agent:\n{knowledge}"})
+                        # 4. Agent injected knowledge (if any)
+                        knowledge = instruction_store.get_agent_knowledge(sid)
+                        if knowledge:
+                            messages.append({"role": "system", "content": f"Context from agent:\n{knowledge}"})
 
-                    # 5. Current user turn
-                    messages.append({"role": "user", "content": transcript})
+                        # 5. Current user turn
+                        messages.append({"role": "user", "content": transcript})
 
-                    reply, llm_ms, llm_model = await asyncio.to_thread(llm_backend.generate, messages)
+                        reply, llm_ms, llm_model = await asyncio.to_thread(llm_backend.generate, messages)
 
                 # Commit to history
                 session_store.append(sid, "user", transcript)
@@ -531,6 +527,13 @@ async def agent_ws(ws: WebSocket) -> None:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            # --- request_id correlation: catch takeover replies first ---
+            request_id = msg.get("request_id")
+            if request_id and "reply" in msg:
+                reply_text = str(msg["reply"])
+                agent_interface.resolve_turn_reply(str(request_id), reply_text)
+                continue
+
             msg_type = str(msg.get("type", ""))
 
             if msg_type == "takeover":
@@ -604,7 +607,8 @@ async def agent_ws(ws: WebSocket) -> None:
                 sid = str(msg.get("session_id", ""))
                 context = voice_pipeline.safe_text(str(msg.get("context", "")))
                 if sid and context:
-                    instruction_store.set_agent_knowledge(sid, context)
+                    async with session_store.get_lock(sid):
+                        instruction_store.set_agent_knowledge(sid, context)
                     await ws.send_json({"type": "inject_context.ack", "ok": True})
                     await bus.publish("agent.context_injected", {"session_id": sid}, session_id=sid)
                 else:
@@ -612,7 +616,8 @@ async def agent_ws(ws: WebSocket) -> None:
 
             elif msg_type == "clear_context":
                 sid = str(msg.get("session_id", ""))
-                instruction_store.clear_agent_knowledge(sid)
+                async with session_store.get_lock(sid):
+                    instruction_store.clear_agent_knowledge(sid)
                 await ws.send_json({"type": "clear_context.ack", "ok": True})
                 await bus.publish("agent.context_cleared", {"session_id": sid}, session_id=sid)
 
@@ -674,14 +679,16 @@ async def set_agent_context(session_id: str, request: Request) -> JSONResponse:
     context = voice_pipeline.safe_text(str(body.get("context", "")))
     if not context:
         raise HTTPException(status_code=400, detail="context is required")
-    instruction_store.set_agent_knowledge(session_id, context)
+    async with session_store.get_lock(session_id):
+        instruction_store.set_agent_knowledge(session_id, context)
     await bus.publish("agent.context_injected", {"session_id": session_id}, session_id=session_id)
     return JSONResponse({"ok": True, "session_id": session_id})
 
 
 @app.delete("/api/agent/context/{session_id}")
 async def clear_agent_context(session_id: str) -> JSONResponse:
-    instruction_store.clear_agent_knowledge(session_id)
+    async with session_store.get_lock(session_id):
+        instruction_store.clear_agent_knowledge(session_id)
     await bus.publish("agent.context_cleared", {"session_id": session_id}, session_id=session_id)
     return JSONResponse({"ok": True, "session_id": session_id})
 
