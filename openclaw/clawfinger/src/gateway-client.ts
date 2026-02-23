@@ -73,6 +73,10 @@ export class GatewayClient {
     return this.get(`/api/agent/call/${sessionId}`);
   }
 
+  async endSession(sessionId: string): Promise<any> {
+    return this.post("/api/session/end", { session_id: sessionId });
+  }
+
   // --- Context ---
 
   async getContext(sessionId: string): Promise<any> {

@@ -393,6 +393,7 @@ adb reverse --list
 | `POST` | `/api/turn` | Full voice turn — see below |
 | `POST` | `/api/session/new` | Create session → `{"session_id": "..."}` |
 | `POST` | `/api/session/reset` | Reset session history |
+| `POST` | `/api/session/end` | Mark session as ended — `{"session_id": "..."}` → `{"ok": true}`. Publishes `session.ended` event. |
 
 ### `/api/turn` — Main voice turn
 
@@ -777,9 +778,10 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `get_call_state` | `session_id` | Query full call state (history, instructions, takeover status) |
 | `inject_context` | `session_id`, `context` | Inject/replace agent knowledge for a session |
 | `clear_context` | `session_id` | Clear injected agent knowledge |
+| `end_session` | `session_id` | Mark a session as ended (hung up) |
 | `ping` | — | Heartbeat |
 
-**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `pong`.
+**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `end_session.ack`, `pong`.
 
 **`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
 

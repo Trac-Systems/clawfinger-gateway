@@ -240,6 +240,30 @@ export default function register(api: OpenClawPluginApi) {
   });
 
   api.registerTool({
+    name: "clawfinger_session_end",
+    label: "Clawfinger End Session",
+    description:
+      "Mark a call session as ended (hung up). Moves it from active to ended state.",
+    parameters: Type.Object({
+      session_id: Type.String({ description: "Session ID to end" }),
+    }),
+    async execute(_id: string, params: { session_id: string }) {
+      const result = await client.endSession(params.session_id);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.ok
+              ? `Session ${params.session_id} ended.`
+              : `Failed to end session: ${JSON.stringify(result)}`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
     name: "clawfinger_instructions_set",
     label: "Clawfinger Set Instructions",
     description:
@@ -304,6 +328,7 @@ export default function register(api: OpenClawPluginApi) {
     "/clawfinger config llm                       — show LLM model and params",
     "/clawfinger instructions <text>              — set global LLM instructions",
     "/clawfinger instructions <session_id> <text> — set per-session instructions",
+    "/clawfinger end <session_id>                 — mark a session as ended (hung up)",
   ].join("\n");
 
   api.registerCommand({
@@ -396,6 +421,13 @@ export default function register(api: OpenClawPluginApi) {
           if (!tokens[1]) return { text: "Usage: /clawfinger release <session_id>" };
           const ok = await bridge.release(tokens[1]);
           return { text: ok ? `Released ${tokens[1]}` : `Release failed for ${tokens[1]}` };
+        }
+
+        // --- end <session_id> ---
+        if (action === "end") {
+          if (!tokens[1]) return { text: "Usage: /clawfinger end <session_id>" };
+          const result = await client.endSession(tokens[1]);
+          return { text: result.ok ? `Session ${tokens[1]} ended.` : `End failed: ${JSON.stringify(result)}` };
         }
 
         // --- context get|set|clear <session_id> [text] ---

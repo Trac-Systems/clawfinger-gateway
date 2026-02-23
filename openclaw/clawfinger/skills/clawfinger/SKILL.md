@@ -31,6 +31,7 @@ Real-time bridge to the Clawfinger voice gateway. Gives you full control over ac
 | `clawfinger_inject` | Inject a TTS message into the active call — text is synthesized and played to the caller |
 | `clawfinger_takeover` | Take over LLM control for a session — you receive transcripts and must provide replies |
 | `clawfinger_release` | Release LLM control back to the local gateway LLM |
+| `clawfinger_session_end` | Mark a call session as ended (hung up) — moves it from active to ended state |
 
 ### Context and Instructions
 
@@ -122,3 +123,4 @@ All gateway operations are also available as direct `/clawfinger` subcommands th
 | `/clawfinger config llm` | Show LLM model and generation params |
 | `/clawfinger instructions <text>` | Set global LLM system instructions |
 | `/clawfinger instructions <session_id> <text>` | Set per-session LLM instructions |
+| `/clawfinger end <session_id>` | Mark a session as ended (hung up) |

@@ -29,8 +29,17 @@ _SUMMARY: dict[str, str] = {}
 # Passphrase auth state: {session_id: {"validated": bool, "attempts": int}}
 _AUTH_STATE: dict[str, dict[str, Any]] = {}
 
+# Ended sessions: {session_id: ended_at_timestamp}
+_ENDED: dict[str, float] = {}
+
+# Last activity timestamp per session (updated on each turn)
+_LAST_ACTIVITY: dict[str, float] = {}
+
 # Per-session asyncio locks for concurrent access coordination
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+
+# Stale session TTL in seconds (no activity → auto-end)
+_SESSION_TTL = 300  # 5 minutes
 
 
 def get_lock(session_id: str) -> asyncio.Lock:
@@ -60,6 +69,8 @@ def reset(session_id: str) -> str:
     _AUTH_STATE.pop(session_id, None)
     _SUMMARY.pop(session_id, None)
     _SESSION_LOCKS.pop(session_id, None)
+    _ENDED.pop(session_id, None)
+    _LAST_ACTIVITY.pop(session_id, None)
     # Also clean up agent knowledge for this session
     import instruction_store
     instruction_store.clear_agent_knowledge(session_id)
@@ -189,8 +200,61 @@ def get_session_detail(session_id: str) -> dict[str, Any] | None:
 
 
 def active_sessions() -> dict[str, dict[str, Any]]:
-    """Return all current in-memory session metadata."""
+    """Return only active (not ended) in-memory session metadata."""
+    return {sid: meta for sid, meta in _META.items() if sid not in _ENDED}
+
+
+def ended_sessions() -> dict[str, dict[str, Any]]:
+    """Return ended session metadata with ended_at timestamps."""
+    return {
+        sid: {**_META[sid], "ended_at": _ENDED[sid]}
+        for sid in _ENDED
+        if sid in _META
+    }
+
+
+def all_sessions() -> dict[str, dict[str, Any]]:
+    """Return all in-memory session metadata (active + ended)."""
     return dict(_META)
+
+
+def end_session(session_id: str) -> bool:
+    """Mark a session as ended. Returns True if it was active."""
+    if session_id not in _META or session_id in _ENDED:
+        return False
+    _ENDED[session_id] = time.time()
+    save_session(session_id)
+    # Release agent takeover if any
+    import agent_interface
+    for ws in list(agent_interface._AGENTS):
+        if session_id in agent_interface._AGENTS[ws].get("takeover_sessions", set()):
+            agent_interface._TAKEOVER.pop(session_id, None)
+            agent_interface._AGENTS[ws]["takeover_sessions"].discard(session_id)
+    return True
+
+
+def is_ended(session_id: str) -> bool:
+    return session_id in _ENDED
+
+
+def touch(session_id: str) -> None:
+    """Update last-activity timestamp for a session."""
+    _LAST_ACTIVITY[session_id] = time.time()
+
+
+def sweep_stale() -> list[str]:
+    """Auto-end sessions with no activity for SESSION_TTL seconds. Returns ended IDs."""
+    now = time.time()
+    ttl = config.get("session_ttl", _SESSION_TTL)
+    stale = []
+    for sid in list(_META):
+        if sid in _ENDED:
+            continue
+        last = _LAST_ACTIVITY.get(sid, _META[sid].get("created_at", now))
+        if now - last > ttl:
+            stale.append(sid)
+            end_session(sid)
+    return stale
 
 
 # ---------------------------------------------------------------------------

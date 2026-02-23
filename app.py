@@ -98,6 +98,20 @@ async def session_reset(request: Request, session_id: str = Form("")) -> JSONRes
     return JSONResponse({"ok": True, "session_id": sid})
 
 
+@app.post("/api/session/end")
+async def session_end(request: Request) -> JSONResponse:
+    """Mark a session as ended (call hung up)."""
+    _check_bearer(request)
+    body = await request.json()
+    sid = voice_pipeline.safe_text(str(body.get("session_id", "")))
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id required")
+    ok = session_store.end_session(sid)
+    if ok:
+        await bus.publish("session.ended", {"session_id": sid}, session_id=sid)
+    return JSONResponse({"ok": ok, "session_id": sid})
+
+
 @app.post("/api/turn")
 async def api_turn(
     request: Request,
@@ -161,6 +175,12 @@ async def api_turn(
             "session_id": sid, "reply": reject_text,
             "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
         })
+
+    # Touch session activity + sweep stale sessions
+    session_store.touch(sid)
+    stale = session_store.sweep_stale()
+    for stale_sid in stale:
+        await bus.publish("session.ended", {"session_id": stale_sid, "reason": "stale"}, session_id=stale_sid)
 
     start = time.perf_counter()
     _CALL_COUNT += 1
@@ -386,6 +406,7 @@ async def system_status() -> JSONResponse:
         "total_calls": _CALL_COUNT,
         "error_count": _ERROR_COUNT,
         "active_sessions": len(session_store.active_sessions()),
+        "ended_sessions": len(session_store.ended_sessions()),
         "ui_subscribers": bus.subscriber_count,
         "agents": agent_interface.list_agents(),
         "mlx_audio": voice_pipeline.check_mlx_audio(),
@@ -622,6 +643,16 @@ async def agent_ws(ws: WebSocket) -> None:
                 await ws.send_json({"type": "clear_context.ack", "ok": True})
                 await bus.publish("agent.context_cleared", {"session_id": sid}, session_id=sid)
 
+            elif msg_type == "end_session":
+                sid = str(msg.get("session_id", ""))
+                if sid:
+                    ok = session_store.end_session(sid)
+                    await ws.send_json({"type": "end_session.ack", "ok": ok, "session_id": sid})
+                    if ok:
+                        await bus.publish("session.ended", {"session_id": sid}, session_id=sid)
+                else:
+                    await ws.send_json({"type": "end_session.ack", "ok": False})
+
             elif msg_type == "ping":
                 await ws.send_json({"type": "pong"})
 
@@ -719,7 +750,7 @@ def _tts_config_response() -> dict:
     model = cfg.get("tts_model", "")
     is_kokoro = "kokoro" in model.lower()
     return {
-        "voice": cfg.get("tts_voice", "af_heart"),
+        "voice": cfg.get("tts_voice", "am_adam"),
         "speed": cfg.get("tts_speed", 1.2),
         "model": model,
         "voices": _KOKORO_VOICES if is_kokoro else {},
@@ -749,7 +780,7 @@ async def update_tts_config(request: Request) -> JSONResponse:
 async def tts_preview(request: Request) -> JSONResponse:
     body = await request.json()
     text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hello, this is a voice preview."
-    preview_voice = str(body.get("voice", "")) or config.get("tts_voice", "af_heart")
+    preview_voice = str(body.get("voice", "")) or config.get("tts_voice", "am_adam")
     preview_speed = float(body.get("speed", 0)) or config.get("tts_speed", 1.2)
 
     cfg = config.load()

@@ -84,7 +84,7 @@ def _migrate(cfg: dict[str, Any]) -> None:
 
     # TTS defaults
     cfg.setdefault("tts_model", "mlx-community/Kokoro-82M-bf16")
-    cfg.setdefault("tts_voice", "af_heart")
+    cfg.setdefault("tts_voice", "am_adam")
     cfg.setdefault("tts_speed", 1.2)
 
     # LLM extended settings
