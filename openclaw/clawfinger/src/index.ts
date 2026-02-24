@@ -207,17 +207,29 @@ export default function register(api: OpenClawPluginApi) {
     name: "clawfinger_turn_reply",
     label: "Clawfinger Turn Reply",
     description:
-      "Send your reply to the caller for a takeover turn. Must include the request_id from clawfinger_turn_wait.",
+      "Send your reply to the caller and wait for their next turn. Returns the next caller transcript + request_id (same as turn_wait). If no next turn arrives within 45s, returns a timeout notice. Call this in a loop for multi-turn conversations.",
     parameters: Type.Object({
-      request_id: Type.String({ description: "The request_id from clawfinger_turn_wait" }),
+      request_id: Type.String({ description: "The request_id from clawfinger_turn_wait or previous turn_reply" }),
       reply: Type.String({ description: "Your response text (will be spoken to the caller via TTS)" }),
     }),
     async execute(_id: string, params: { request_id: string; reply: string }) {
       bridge.sendTurnReply(params.request_id, params.reply);
+
+      // Immediately start waiting for the next turn — eliminates the
+      // LLM think-time gap between turn_reply and the next turn_wait
+      const next = await bridge.popTurnRequest(45_000);
+      if (!next) {
+        return {
+          content: [
+            { type: "text", text: `Reply sent: "${params.reply}"\n\nNo next turn arrived within 45s. The caller may have hung up. Call clawfinger_turn_wait to keep waiting, or clawfinger_release to hand back control.` },
+          ],
+        };
+      }
       return {
         content: [
-          { type: "text", text: `Reply sent: "${params.reply}"` },
+          { type: "text", text: `Reply sent: "${params.reply}"\n\nNext turn — Caller said: "${next.transcript}"\n\nrequest_id: ${next.request_id}\n\nCall clawfinger_turn_reply again with this request_id and your response.` },
         ],
+        details: next,
       };
     },
   });

@@ -336,8 +336,9 @@ async def api_turn(
                 agent_ws = agent_interface.get_takeover_agent(sid)
                 if agent_ws is not None:
                     # Route to agent via single-reader pattern (request_id correlation)
+                    takeover_timeout = config.get("agent_takeover_timeout", 60)
                     reply_text = await agent_interface.send_turn_request(
-                        agent_ws, sid, transcript,
+                        agent_ws, sid, transcript, timeout=takeover_timeout,
                     )
                     if reply_text is not None:
                         reply = voice_pipeline.safe_text(reply_text)
