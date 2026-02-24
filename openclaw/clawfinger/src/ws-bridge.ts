@@ -20,6 +20,17 @@ interface Logger {
   error(msg: string): void;
 }
 
+interface TurnRequest {
+  session_id: string;
+  transcript: string;
+  request_id: string;
+}
+
+interface TurnWaiter {
+  resolve: (value: TurnRequest | null) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class WsBridge {
   private gatewayUrl: string;
   private logger: Logger;
@@ -30,6 +41,8 @@ export class WsBridge {
   private maxReconnectDelay = 30_000;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private shouldConnect = false;
+  private turnQueue: TurnRequest[] = [];
+  private turnWaiters: TurnWaiter[] = [];
 
   isConnected = false;
   takenOverSessions: Set<string> = new Set();
@@ -53,6 +66,12 @@ export class WsBridge {
     }
     this.isConnected = false;
     this.takenOverSessions.clear();
+    this.turnQueue.length = 0;
+    for (const w of this.turnWaiters) {
+      clearTimeout(w.timer);
+      w.resolve(null);
+    }
+    this.turnWaiters.length = 0;
   }
 
   onEvent(callback: EventCallback): void {
@@ -85,6 +104,28 @@ export class WsBridge {
    */
   sendTurnReply(requestId: string, reply: string): void {
     this.sendRaw({ reply, request_id: requestId });
+  }
+
+  /**
+   * Wait for the next turn.request to arrive in the queue.
+   * Returns null if timeout expires before a request arrives.
+   */
+  popTurnRequest(timeoutMs: number): Promise<TurnRequest | null> {
+    // If there's already a queued request, return it immediately
+    if (this.turnQueue.length > 0) {
+      return Promise.resolve(this.turnQueue.shift()!);
+    }
+
+    // Otherwise, wait for one to arrive
+    return new Promise<TurnRequest | null>((resolve) => {
+      const timer = setTimeout(() => {
+        const idx = this.turnWaiters.findIndex((w) => w.resolve === resolve);
+        if (idx !== -1) this.turnWaiters.splice(idx, 1);
+        resolve(null);
+      }, timeoutMs);
+
+      this.turnWaiters.push({ resolve, timer });
+    });
   }
 
   /**
@@ -153,6 +194,12 @@ export class WsBridge {
         this.isConnected = false;
         this.stopHeartbeat();
         this.takenOverSessions.clear();
+        this.turnQueue.length = 0;
+        for (const w of this.turnWaiters) {
+          clearTimeout(w.timer);
+          w.resolve(null);
+        }
+        this.turnWaiters.length = 0;
         if (this.shouldConnect) {
           this.scheduleReconnect();
         }
@@ -181,6 +228,35 @@ export class WsBridge {
         cb(msg);
       } catch {
         // listener errors should not break the bridge
+      }
+    }
+
+    // Queue turn.request events for popTurnRequest consumers
+    if (msgType === "turn.request") {
+      // Fields may be at top level or nested in msg.data
+      const d = msg.data || msg;
+      const request_id = d.request_id || msg.request_id;
+      if (request_id) {
+        const turn: TurnRequest = {
+          session_id: d.session_id || msg.session_id || "",
+          transcript: d.transcript || msg.transcript || "",
+          request_id,
+        };
+
+        // Discard any older requests for the same session — they're stale
+        // (gateway already timed out and fell back to local LLM)
+        this.turnQueue = this.turnQueue.filter(
+          (t) => t.session_id !== turn.session_id,
+        );
+
+        // If someone is waiting, deliver directly; otherwise queue
+        if (this.turnWaiters.length > 0) {
+          const waiter = this.turnWaiters.shift()!;
+          clearTimeout(waiter.timer);
+          waiter.resolve(turn);
+        } else {
+          this.turnQueue.push(turn);
+        }
       }
     }
   }

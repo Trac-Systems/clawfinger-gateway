@@ -30,7 +30,9 @@ Real-time bridge to the Clawfinger voice gateway. Gives you full control over ac
 | `clawfinger_dial` | Dial an outbound phone call (phone must be connected via ADB) |
 | `clawfinger_hangup` | Force hang up the active phone call via ADB and end the gateway session |
 | `clawfinger_inject` | Inject a TTS message into the active call — text is synthesized and played to the caller |
-| `clawfinger_takeover` | Take over LLM control for a session — you receive transcripts and must provide replies |
+| `clawfinger_takeover` | Take over LLM control for a session — then use turn_wait/turn_reply to handle turns |
+| `clawfinger_turn_wait` | Wait for the next caller turn during takeover (returns transcript + request_id) |
+| `clawfinger_turn_reply` | Send your reply text for a takeover turn (requires request_id from turn_wait) |
 | `clawfinger_release` | Release LLM control back to the local gateway LLM |
 | `clawfinger_session_end` | Mark a call session as ended (hung up) — moves it from active to ended state |
 
@@ -122,8 +124,10 @@ During takeover, if you fail to reply within 30 seconds, the gateway falls back 
 ```
 1. clawfinger_sessions        -> find the active session
 2. clawfinger_takeover        -> take LLM control
-3. (receive turn.request events, respond with your own text)
-4. clawfinger_release         -> hand back to local LLM
+3. clawfinger_turn_wait       -> blocks until caller speaks, returns transcript + request_id
+4. clawfinger_turn_reply      -> send your response with the request_id
+   (repeat 3-4 for each turn)
+5. clawfinger_release         -> hand back to local LLM
 ```
 
 ### Outbound call with greeting

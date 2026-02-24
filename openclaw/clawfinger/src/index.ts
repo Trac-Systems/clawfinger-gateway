@@ -160,7 +160,7 @@ export default function register(api: OpenClawPluginApi) {
     name: "clawfinger_takeover",
     label: "Clawfinger Takeover",
     description:
-      "Take over LLM control for a call session. After takeover, you will receive caller transcripts and must provide replies.",
+      "Take over LLM control for a call session. After takeover, use clawfinger_turn_wait to receive caller transcripts, then clawfinger_turn_reply to respond. Call clawfinger_release when done.",
     parameters: Type.Object({
       session_id: Type.String({ description: "Session ID to take over" }),
     }),
@@ -168,9 +168,56 @@ export default function register(api: OpenClawPluginApi) {
       const ok = await bridge.takeover(params.session_id);
       return {
         content: [
-          { type: "text", text: ok ? "Takeover active." : "Takeover failed." },
+          { type: "text", text: ok ? "Takeover active. Use clawfinger_turn_wait to receive the next caller turn." : "Takeover failed." },
         ],
         details: { ok },
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_turn_wait",
+    label: "Clawfinger Wait for Turn",
+    description:
+      "Wait for the next caller turn during takeover. Returns the caller's transcript and a request_id. You MUST then call clawfinger_turn_reply with that request_id and your response text. Times out after 30 seconds if no turn arrives.",
+    parameters: Type.Object({
+      timeout_ms: Type.Optional(
+        Type.Number({ description: "Timeout in ms (default: 30000)", default: 30000 }),
+      ),
+    }),
+    async execute(_id: string, params: { timeout_ms?: number }) {
+      const turn = await bridge.popTurnRequest(params.timeout_ms || 30000);
+      if (!turn) {
+        return {
+          content: [
+            { type: "text", text: "No turn arrived within timeout. The caller may have hung up or is still speaking. You can call clawfinger_turn_wait again to keep waiting, or clawfinger_release to hand back control." },
+          ],
+        };
+      }
+      return {
+        content: [
+          { type: "text", text: `Caller said: "${turn.transcript}"\n\nrequest_id: ${turn.request_id}\n\nYou MUST now call clawfinger_turn_reply with this request_id and your response.` },
+        ],
+        details: turn,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_turn_reply",
+    label: "Clawfinger Turn Reply",
+    description:
+      "Send your reply to the caller for a takeover turn. Must include the request_id from clawfinger_turn_wait.",
+    parameters: Type.Object({
+      request_id: Type.String({ description: "The request_id from clawfinger_turn_wait" }),
+      reply: Type.String({ description: "Your response text (will be spoken to the caller via TTS)" }),
+    }),
+    async execute(_id: string, params: { request_id: string; reply: string }) {
+      bridge.sendTurnReply(params.request_id, params.reply);
+      return {
+        content: [
+          { type: "text", text: `Reply sent: "${params.reply}"` },
+        ],
       };
     },
   });
