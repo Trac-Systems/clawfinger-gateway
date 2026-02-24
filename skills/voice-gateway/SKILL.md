@@ -133,6 +133,7 @@ cp config.example.json config.json
 | `caller_allowlist` | `[]` | Phone numbers allowed to call. Empty = allow all. |
 | `caller_blocklist` | `[]` | Phone numbers always blocked. Checked even when allowlist is empty. |
 | `unknown_callers_allowed` | `true` | Accept calls with hidden/unavailable caller ID |
+| `keep_history` | `false` | Persist conversation history per caller number across calls. When enabled, returning callers resume with their previous conversation context. When disabled, any saved histories are deleted on the next call from each number. Unknown/hidden callers always start fresh. |
 | `greeting_incoming` | `"Hello, I am {owner}'s assistant..."` | Greeting for incoming calls. `{owner}` replaced with `greeting_owner`. |
 | `greeting_outgoing` | `"Hello, this is {owner}'s assistant calling. Please wait for the beep before speaking."` | Greeting for outgoing calls. `{owner}` replaced with `greeting_owner`. |
 | `greeting_owner` | `"the owner"` | Name substituted into `{owner}` placeholders |
@@ -464,6 +465,8 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 | `POST` | `/api/config/call` | Update call policy + security settings |
 | `POST` | `/api/call/inject` | Inject TTS message — `{"text": "...", "session_id": "..."}` |
 | `POST` | `/api/call/dial` | Dial outbound call — `{"number": "+49..."}` |
+| `GET` | `/api/caller-history` | List saved caller histories (number, total_calls, last_call_at) |
+| `DELETE` | `/api/caller-history/{number}` | Delete saved history for a caller number |
 | `WS` | `/ws/events` | Real-time event stream for UI |
 
 ### TTS Config API
@@ -612,7 +615,8 @@ Returns the full LLM config response (same shape as GET). Saves to `config.json`
   "max_duration_message": "...",
   "auth_required": true,
   "auth_reject_message": "...",
-  "auth_max_attempts": 3
+  "auth_max_attempts": 3,
+  "keep_history": false
 }
 ```
 
@@ -787,7 +791,7 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 
 **`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
 
-Allowed keys: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `tts_voice`, `tts_speed`.
+Allowed keys: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `keep_history`, `tts_voice`, `tts_speed`.
 
 Blocked from agents: `auth_passphrase`, `auth_*`, `caller_allowlist`, `caller_blocklist`, `unknown_callers_allowed`. These can only be changed via `POST /api/config/call` (control center).
 
@@ -853,6 +857,7 @@ gateway/
 ├── .venv/                  # Python virtual environment (not tracked)
 ├── .models/                # HuggingFace model cache (not tracked)
 ├── sessions/               # Persisted session JSON logs (not tracked)
+├── caller_history/         # Per-caller conversation history (not tracked)
 └── tmp/                    # Temp audio files + PID files (not tracked)
 ```
 

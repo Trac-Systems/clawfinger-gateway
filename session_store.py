@@ -9,10 +9,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import re
+
 import config
 
 _SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+_CALLER_HISTORY_DIR = Path(__file__).resolve().parent / "caller_history"
+_CALLER_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
 # In-memory conversation history: {session_id: [{"role": ..., "content": ...}, ...]}
 _HISTORY: dict[str, list[dict[str, str]]] = {}
@@ -130,8 +135,11 @@ def compact(session_id: str) -> None:
     max_turns = config.get("max_history_turns", 8)
     keep = max(1, max_turns) * 2  # messages to keep verbatim
 
-    # Also check token budget if configured
+    # Token budget: use explicit config, or auto-detect from loaded model
     context_limit = config.get("llm_context_tokens", 0)
+    if context_limit <= 0:
+        import llm_backend
+        context_limit = llm_backend.get_context_window()
     if context_limit > 0:
         reserve = config.get("llm_max_tokens", 400) + 300  # output + system prompt headroom
         budget = context_limit - reserve
@@ -239,6 +247,15 @@ def active_sessions() -> dict[str, dict[str, Any]]:
     return {sid: meta for sid, meta in _META.items() if sid not in _ENDED}
 
 
+def most_recent_active_session() -> str | None:
+    """Return session_id of the most recently active session (by last activity), or None."""
+    active = {sid: _LAST_ACTIVITY.get(sid, _META[sid].get("created_at", 0))
+              for sid in _META if sid not in _ENDED}
+    if not active:
+        return None
+    return max(active, key=active.get)
+
+
 def ended_sessions() -> dict[str, dict[str, Any]]:
     """Return ended session metadata with ended_at timestamps."""
     return {
@@ -259,6 +276,14 @@ def end_session(session_id: str) -> bool:
         return False
     _ENDED[session_id] = time.time()
     save_session(session_id)
+    # Save caller history if keep_history is enabled and caller is known
+    if config.get("keep_history", False):
+        caller = _CALLER_INFO.get(session_id, {})
+        number = caller.get("number", "")
+        if number:
+            history = _HISTORY.get(session_id, [])
+            summary = _SUMMARY.get(session_id, "")
+            save_caller_history(number, history, summary)
     # Clean up ALL instruction/knowledge state so nothing bleeds into future sessions
     import instruction_store
     instruction_store.clear_all_for_session(session_id)
@@ -332,3 +357,78 @@ def record_auth_attempt(session_id: str) -> int:
 
 def clear_auth_state(session_id: str) -> None:
     _AUTH_STATE.pop(session_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Caller history persistence
+# ---------------------------------------------------------------------------
+
+def _normalize_number(number: str) -> str:
+    """Normalize a phone number for consistent file naming (strip whitespace, dashes, parens)."""
+    return re.sub(r"[\s\-\(\)]", "", number)
+
+
+def save_caller_history(number: str, history: list, summary: str) -> None:
+    """Persist conversation history for a caller number."""
+    normalized = _normalize_number(number)
+    if not normalized:
+        return
+    path = _CALLER_HISTORY_DIR / f"{normalized}.json"
+    existing = _load_caller_file(path)
+    total_calls = (existing.get("total_calls", 0) + 1) if existing else 1
+    data = {
+        "number": normalized,
+        "history": history,
+        "summary": summary,
+        "last_call_at": time.time(),
+        "total_calls": total_calls,
+    }
+    path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+
+
+def load_caller_history(number: str) -> dict | None:
+    """Load persisted caller history. Returns dict with history/summary/total_calls/last_call_at or None."""
+    normalized = _normalize_number(number)
+    if not normalized:
+        return None
+    path = _CALLER_HISTORY_DIR / f"{normalized}.json"
+    return _load_caller_file(path)
+
+
+def _load_caller_file(path: Path) -> dict | None:
+    """Read a caller history JSON file."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def delete_caller_history(number: str) -> bool:
+    """Delete persisted caller history. Returns True if file existed."""
+    normalized = _normalize_number(number)
+    if not normalized:
+        return False
+    path = _CALLER_HISTORY_DIR / f"{normalized}.json"
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+def list_caller_histories() -> list[dict]:
+    """List all saved caller histories with metadata."""
+    histories = []
+    for path in sorted(_CALLER_HISTORY_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            histories.append({
+                "number": data.get("number", path.stem),
+                "total_calls": data.get("total_calls", 0),
+                "last_call_at": data.get("last_call_at"),
+                "turn_count": len(data.get("history", [])),
+            })
+        except (json.JSONDecodeError, OSError):
+            continue
+    return histories

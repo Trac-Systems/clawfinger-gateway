@@ -195,6 +195,11 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
           <input type="checkbox" id="cp-unknown" style="width:auto"> Allow unknown/hidden caller ID
         </label>
       </div>
+      <div class="row">
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="cp-keep-history" style="width:auto"> Keep caller history across calls
+        </label>
+      </div>
       <div style="margin-top:8px">
         <label style="font-size:12px;color:var(--fg2)">Incoming greeting:</label>
         <textarea id="cp-greeting-in" rows="2" placeholder="Hello, I am {owner}'s assistant..."></textarea>
@@ -303,8 +308,9 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
         <input type="number" id="llm-max-tokens" min="1" max="4096" value="400" style="width:80px">
       </div>
       <div style="margin-top:8px">
-        <label style="font-size:12px;color:var(--fg2)">Context Window (tokens) <span style="font-size:11px">(0 = no limit)</span>:</label>
+        <label style="font-size:12px;color:var(--fg2)">Context Window (tokens) <span style="font-size:11px">(0 = auto-detect from model)</span>:</label>
         <input type="number" id="llm-context-tokens" min="0" max="131072" value="0" style="width:100px">
+        <span id="llm-context-effective" style="font-size:11px;color:var(--fg2);margin-left:6px"></span>
       </div>
       <div style="margin-top:8px">
         <label style="font-size:12px;color:var(--fg2)">Max History Turns:</label>
@@ -606,16 +612,32 @@ async function loadInstructions() {
 
 async function saveInstructions() {
   const fb = document.getElementById('instr-feedback');
-  fb.style.color = 'var(--red)';
-  fb.textContent = 'Global instructions disabled (session isolation). Edit llm_system_prompt in config instead.';
-  setTimeout(() => { fb.textContent = ''; }, 5000);
+  try {
+    const text = document.getElementById('instr-base').value;
+    const r = await fetch(`${BASE}/api/instructions`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text})
+    });
+    const data = await r.json();
+    if (data.ok) {
+      fb.style.color = 'var(--green)';
+      fb.textContent = 'Saved';
+    } else {
+      fb.style.color = 'var(--red)';
+      fb.textContent = data.error || 'Save failed';
+    }
+  } catch(e) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = 'Error: ' + e.message;
+  }
+  setTimeout(() => { fb.textContent = ''; }, 3000);
 }
 
 async function resetInstructions() {
-  loadInstructions();
+  await loadInstructions();
   const fb = document.getElementById('instr-feedback');
   fb.style.color = 'var(--green)';
-  fb.textContent = 'Showing default from config (read-only)';
+  fb.textContent = 'Reloaded from config';
   setTimeout(() => { fb.textContent = ''; }, 3000);
 }
 
@@ -638,6 +660,7 @@ async function loadCallConfig() {
     document.getElementById('cp-allowlist').value = (c.caller_allowlist || []).join(', ');
     document.getElementById('cp-blocklist').value = (c.caller_blocklist || []).join(', ');
     document.getElementById('cp-unknown').checked = c.unknown_callers_allowed;
+    document.getElementById('cp-keep-history').checked = c.keep_history || false;
     document.getElementById('cp-greeting-in').value = c.greeting_incoming_template || c.greeting_incoming || '';
     document.getElementById('cp-greeting-out').value = c.greeting_outgoing_template || c.greeting_outgoing || '';
     document.getElementById('cp-owner').value = c.greeting_owner || '';
@@ -660,6 +683,7 @@ async function applyCallPolicy() {
     caller_allowlist: alRaw ? alRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
     caller_blocklist: blRaw ? blRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
     unknown_callers_allowed: document.getElementById('cp-unknown').checked,
+    keep_history: document.getElementById('cp-keep-history').checked,
     greeting_incoming: document.getElementById('cp-greeting-in').value,
     greeting_outgoing: document.getElementById('cp-greeting-out').value,
     greeting_owner: document.getElementById('cp-owner').value.trim(),
@@ -804,6 +828,9 @@ async function loadLlmConfig() {
     rpEl.value = c.repeat_penalty; document.getElementById('llm-rp-val').textContent = c.repeat_penalty;
     document.getElementById('llm-max-tokens').value = c.max_tokens;
     document.getElementById('llm-context-tokens').value = c.context_tokens || 0;
+    const effCtx = c.context_tokens_effective || 0;
+    const effEl = document.getElementById('llm-context-effective');
+    effEl.textContent = effCtx > 0 && !c.context_tokens ? `(auto: ${effCtx.toLocaleString()})` : '';
     document.getElementById('llm-max-history-turns').value = c.max_history_turns || 8;
     document.getElementById('llm-stop').value = (c.stop || []).join(', ');
   } catch(e) {}

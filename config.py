@@ -107,6 +107,9 @@ def _migrate(cfg: dict[str, Any]) -> None:
     cfg.setdefault("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
     cfg.setdefault("auth_max_attempts", 3)
 
+    # Caller history persistence
+    cfg.setdefault("keep_history", False)
+
     # ADB path — auto-discover if not set
     if not cfg.get("adb_path"):
         cfg["adb_path"] = _find_adb()

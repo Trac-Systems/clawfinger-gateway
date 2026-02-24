@@ -80,7 +80,7 @@ openclaw gateway restart
 | Tool | Description |
 |------|-------------|
 | `clawfinger_call_config_get` | Read call policy: auto-answer, greetings, caller filtering, max duration, auth |
-| `clawfinger_call_config_set` | Update call policy settings (pass only fields to change) |
+| `clawfinger_call_config_set` | Update call policy settings (pass only fields to change). Allowed fields: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `keep_history`, `tts_voice`, `tts_speed`. |
 
 ## WS Bridge
 

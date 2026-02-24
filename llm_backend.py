@@ -20,6 +20,7 @@ except Exception:
 _LOCAL_MODEL: Any | None = None
 _LOCAL_TOKENIZER: Any | None = None
 _LOCAL_MODEL_NAME: str = ""
+_LOCAL_CONTEXT_WINDOW: int = 0  # auto-detected from model.args
 
 
 def _is_local(cfg: dict[str, Any]) -> bool:
@@ -27,7 +28,7 @@ def _is_local(cfg: dict[str, Any]) -> bool:
 
 
 def _ensure_local_llm(cfg: dict[str, Any]) -> tuple[Any, Any]:
-    global _LOCAL_MODEL, _LOCAL_TOKENIZER, _LOCAL_MODEL_NAME
+    global _LOCAL_MODEL, _LOCAL_TOKENIZER, _LOCAL_MODEL_NAME, _LOCAL_CONTEXT_WINDOW
     model_name = cfg.get("llm_model", "")
     if _LOCAL_MODEL is not None and _LOCAL_TOKENIZER is not None and _LOCAL_MODEL_NAME == model_name:
         return _LOCAL_MODEL, _LOCAL_TOKENIZER
@@ -35,6 +36,8 @@ def _ensure_local_llm(cfg: dict[str, Any]) -> tuple[Any, Any]:
         raise RuntimeError("mlx-lm is not available in this environment")
     _LOCAL_MODEL, _LOCAL_TOKENIZER = mlx_load(model_name)
     _LOCAL_MODEL_NAME = model_name
+    # Auto-detect context window from model args
+    _LOCAL_CONTEXT_WINDOW = getattr(getattr(_LOCAL_MODEL, "args", None), "max_position_embeddings", 0)
     return _LOCAL_MODEL, _LOCAL_TOKENIZER
 
 
@@ -46,6 +49,15 @@ def _apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def get_context_window() -> int:
+    """Return effective context window size in tokens.
+
+    For local MLX models: auto-detected from model.args.max_position_embeddings.
+    For remote models: returns 0 (unknown — user must set llm_context_tokens manually).
+    """
+    return _LOCAL_CONTEXT_WINDOW
+
+
 def preload() -> None:
     """Preload local MLX model at startup."""
     cfg = config.load()
@@ -53,7 +65,8 @@ def preload() -> None:
         return
     try:
         _ensure_local_llm(cfg)
-        print(f"[gateway] LLM preloaded: {cfg['llm_model']}")
+        ctx = f", context_window={_LOCAL_CONTEXT_WINDOW}" if _LOCAL_CONTEXT_WINDOW else ""
+        print(f"[gateway] LLM preloaded: {cfg['llm_model']}{ctx}")
     except Exception as exc:
         print(f"[gateway] LLM preload failed: {exc}")
 

@@ -145,6 +145,22 @@ async def api_turn(
     if caller_number_clean:
         session_store.set_caller_info(sid, caller_number_clean, call_direction_clean)
 
+    # --- Caller history persistence ---
+    if reset_session.lower() == "true" and caller_number_clean:
+        normalized_caller = re.sub(r"[\s\-\(\)]", "", caller_number_clean)
+        if normalized_caller:
+            if cfg.get("keep_history", False):
+                prev = session_store.load_caller_history(normalized_caller)
+                if prev:
+                    for msg in prev.get("history", []):
+                        session_store.get_history(sid)  # ensure list exists
+                        session_store._HISTORY.setdefault(sid, []).append(msg)
+                    prev_summary = prev.get("summary", "")
+                    if prev_summary:
+                        session_store._SUMMARY[sid] = prev_summary
+            else:
+                session_store.delete_caller_history(normalized_caller)
+
     # --- Caller filtering ---
     normalized = re.sub(r"[\s\-\(\)]", "", caller_number_clean)
     blocklist = cfg.get("caller_blocklist", [])
@@ -463,11 +479,9 @@ async def call_inject(request: Request) -> JSONResponse:
     session_id = str(body.get("session_id", ""))
     if not text:
         raise HTTPException(status_code=400, detail="text required")
-    # If no session specified, pick first active session
+    # If no session specified, pick most recently active session
     if not session_id:
-        active = list(session_store.active_sessions().keys())
-        if active:
-            session_id = active[0]
+        session_id = session_store.most_recent_active_session() or ""
     if not session_id:
         raise HTTPException(status_code=400, detail="no active session")
     audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, text)
@@ -492,13 +506,15 @@ async def get_instructions() -> JSONResponse:
 
 @app.post("/api/instructions")
 async def set_base_instruction(request: Request) -> JSONResponse:
-    """Global mutable instructions are disabled to prevent cross-session bleed.
-    Use POST /api/instructions/{sid} for session-scoped instructions instead.
-    The default system prompt is set via llm_system_prompt in config."""
-    return JSONResponse(
-        {"ok": False, "error": "Global mutable instructions disabled. Use /api/instructions/{session_id} instead."},
-        status_code=400,
-    )
+    """Update the default system prompt in config.  All new sessions (and existing
+    sessions without a session-scoped override) will use this prompt."""
+    body = await request.json()
+    text = str(body.get("text", ""))
+    cfg = config.load()
+    cfg["llm_system_prompt"] = text
+    config.save()
+    await bus.publish("instructions.updated", {"scope": "global"})
+    return JSONResponse({"ok": True, "scope": "global"})
 
 
 @app.post("/api/instructions/{sid}")
@@ -667,11 +683,16 @@ async def agent_ws(ws: WebSocket) -> None:
                 sid = str(msg.get("session_id", ""))
                 history = session_store.get_history(sid)
                 meta = session_store.active_sessions().get(sid)
+                ended = session_store.is_ended(sid)
+                all_meta = session_store.all_sessions().get(sid)
+                resp_meta = meta or all_meta
                 await ws.send_json({
                     "type": "call_state",
                     "session_id": sid,
+                    "status": "ended" if ended else ("active" if resp_meta else "unknown"),
+                    "ended_at": session_store._ENDED.get(sid) if ended else None,
                     "history": history,
-                    "turn_count": len(meta.get("turns", [])) if meta else 0,
+                    "turn_count": len(resp_meta.get("turns", [])) if resp_meta else 0,
                     "instructions": {
                         "base": instruction_store.get_base(),
                         "session": instruction_store.get_session(sid),
@@ -759,12 +780,12 @@ async def agent_release_rest(request: Request) -> JSONResponse:
 
 
 def _resolve_session(session_id: str) -> str:
-    """Resolve '_active' to first active session, or return as-is."""
+    """Resolve '_active' to most recently active session, or return as-is."""
     if session_id == "_active":
-        active = list(session_store.active_sessions().keys())
-        if not active:
+        sid = session_store.most_recent_active_session()
+        if not sid:
             raise HTTPException(status_code=404, detail="no active session")
-        return active[0]
+        return sid
     return session_id
 
 
@@ -922,6 +943,7 @@ def _llm_config_response() -> dict:
         "has_api_key": bool(cfg.get("llm_api_key", "")),
         "max_tokens": cfg.get("llm_max_tokens", 400),
         "context_tokens": cfg.get("llm_context_tokens", 0),
+        "context_tokens_effective": cfg.get("llm_context_tokens", 0) or llm_backend.get_context_window(),
         "max_history_turns": cfg.get("max_history_turns", 8),
         "temperature": cfg.get("llm_temperature", 0.2),
         "top_p": cfg.get("llm_top_p", 1.0),
@@ -964,6 +986,7 @@ _CALL_CONFIG_KEYS = {
     "greeting_incoming", "greeting_outgoing", "greeting_owner",
     "max_duration_sec", "max_duration_message",
     "auth_passphrase", "auth_reject_message", "auth_max_attempts",
+    "keep_history",
 }
 
 # Keys agents are NOT allowed to set via WebSocket
@@ -996,6 +1019,7 @@ def _call_config_response() -> dict:
         "auth_required": bool(cfg.get("auth_passphrase", "")),
         "auth_reject_message": cfg.get("auth_reject_message", ""),
         "auth_max_attempts": cfg.get("auth_max_attempts", 3),
+        "keep_history": cfg.get("keep_history", False),
     }
 
 
@@ -1017,6 +1041,21 @@ async def update_call_config(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Caller history endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/caller-history")
+async def list_caller_history() -> JSONResponse:
+    return JSONResponse(session_store.list_caller_histories())
+
+
+@app.delete("/api/caller-history/{number}")
+async def delete_caller_history(number: str) -> JSONResponse:
+    ok = session_store.delete_caller_history(number)
+    return JSONResponse({"ok": ok, "number": number})
+
+
+# ---------------------------------------------------------------------------
 # Agent call state endpoint
 # ---------------------------------------------------------------------------
 
@@ -1024,19 +1063,24 @@ async def update_call_config(request: Request) -> JSONResponse:
 async def agent_call_state(sid: str) -> JSONResponse:
     history = session_store.get_history(sid)
     meta = session_store.active_sessions().get(sid)
+    ended = session_store.is_ended(sid)
+    all_meta = session_store.all_sessions().get(sid)
     instructions = {
         "base": instruction_store.get_base(),
         "session": instruction_store.get_session(sid),
         "pending_turn": instruction_store.get_turn(sid),
     }
     has_takeover = agent_interface.get_takeover_agent(sid) is not None
+    resp_meta = meta or all_meta
     return JSONResponse({
         "session_id": sid,
+        "status": "ended" if ended else ("active" if resp_meta else "unknown"),
+        "ended_at": session_store._ENDED.get(sid) if ended else None,
         "history": history,
-        "turn_count": len(meta.get("turns", [])) if meta else 0,
+        "turn_count": len(resp_meta.get("turns", [])) if resp_meta else 0,
         "instructions": instructions,
         "agent_takeover": has_takeover,
-        "created_at": meta.get("created_at") if meta else None,
+        "created_at": resp_meta.get("created_at") if resp_meta else None,
     })
 
 
@@ -1080,6 +1124,18 @@ async def index() -> HTMLResponse:
 # Startup
 # ---------------------------------------------------------------------------
 
+async def _periodic_sweep() -> None:
+    """Background task: sweep stale sessions every 30 seconds."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            stale = session_store.sweep_stale()
+            for stale_sid in stale:
+                await bus.publish("session.ended", {"session_id": stale_sid, "reason": "stale"}, session_id=stale_sid)
+        except Exception:
+            pass  # Don't crash the background loop
+
+
 @app.on_event("startup")
 async def startup() -> None:
     cfg = config.load()
@@ -1088,6 +1144,7 @@ async def startup() -> None:
     backend_type = "local/MLX" if not cfg.get("llm_base_url") else f"remote/{cfg['llm_base_url']}"
     print(f"[gateway] LLM: {cfg['llm_model']} ({backend_type})")
     llm_backend.preload()
+    asyncio.create_task(_periodic_sweep())
 
 
 # ---------------------------------------------------------------------------
