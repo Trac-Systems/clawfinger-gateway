@@ -102,6 +102,38 @@ export default function register(api: OpenClawPluginApi) {
   });
 
   api.registerTool({
+    name: "clawfinger_hangup",
+    label: "Clawfinger Hangup",
+    description:
+      "Force hang up the active phone call via ADB and end the gateway session.",
+    parameters: Type.Object({
+      session_id: Type.Optional(
+        Type.String({
+          description:
+            "Session ID to end (optional — auto-detects if only one active)",
+        }),
+      ),
+    }),
+    async execute(
+      _id: string,
+      params: { session_id?: string },
+    ) {
+      const result = await client.hangup(params.session_id);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.ok
+              ? "Call hung up."
+              : `Hangup failed: ${JSON.stringify(result)}`,
+          },
+        ],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
     name: "clawfinger_inject",
     label: "Clawfinger Inject TTS",
     description:
@@ -323,6 +355,7 @@ export default function register(api: OpenClawPluginApi) {
     "/clawfinger sessions                         — list active session IDs",
     "/clawfinger state <session_id>               — full call state (history, instructions, takeover)",
     "/clawfinger dial <number>                    — dial outbound call (e.g. +49123456789)",
+    "/clawfinger hangup [session_id]              — force hang up the active call",
     "/clawfinger inject <text>                    — inject TTS into active call (first session)",
     "/clawfinger inject <session_id> <text>       — inject TTS into specific session",
     "/clawfinger takeover <session_id>            — take over LLM control for a session",
@@ -398,6 +431,12 @@ export default function register(api: OpenClawPluginApi) {
           if (!tokens[1]) return { text: "Usage: /clawfinger dial <number>" };
           const result = await client.dial(tokens[1]);
           return { text: result.ok ? `Dialing ${tokens[1]}...` : `Dial failed: ${result.detail}` };
+        }
+
+        // --- hangup [session_id] ---
+        if (action === "hangup") {
+          const result = await client.hangup(tokens[1]);
+          return { text: result.ok ? `Call hung up.${result.session_id ? ` Session: ${result.session_id}` : ''}` : `Hangup failed: ${JSON.stringify(result)}` };
         }
 
         // --- inject [session_id] <text> ---

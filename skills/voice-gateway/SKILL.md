@@ -65,6 +65,12 @@ pip install -r requirements.txt
 pip install 'misaki==0.7.0' num2words spacy phonemizer mecab-python3 unidic-lite webrtcvad 'setuptools<81'
 ```
 
+### Step 2b: Install Piper TTS (German)
+
+```bash
+pip install piper-tts flask pathvalidate
+```
+
 **Critical version pins:**
 | Package | Pin | Reason |
 |---------|-----|--------|
@@ -92,6 +98,13 @@ for repo in [
     snapshot_download(repo)
     print(f'  Done: {repo}')
 "
+
+# Download Piper German TTS model (ONNX — not a HuggingFace model)
+mkdir -p voices
+curl -L -o voices/de_DE-thorsten-high.onnx \
+  'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx?download=true'
+curl -L -o voices/de_DE-thorsten-high.onnx.json \
+  'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json?download=true'
 ```
 
 **Models:**
@@ -99,6 +112,7 @@ for repo in [
 |-------|---------|------|-------|
 | `mlx-community/parakeet-tdt-0.6b-v2` | ASR (speech-to-text) | 2.3 GB | Do NOT use `whisper-small-mlx` — broken processor with mlx_audio 0.3.x |
 | `mlx-community/Kokoro-82M-bf16` | TTS (text-to-speech) | 375 MB | Voice: `af_heart`, speed: 1.2 |
+| `de_DE-thorsten-high` (Piper) | TTS (German) | 109 MB | ONNX, Piper HTTP sidecar on :5123 |
 | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | LLM (conversation) | 852 MB | Loaded in-process via mlx-lm |
 
 ### Step 4: Configure
@@ -119,6 +133,14 @@ cp config.example.json config.json
 - `llm_top_p`, `llm_top_k`, `llm_repeat_penalty`, `llm_stop`: Generation parameters — adjustable at runtime via the control center LLM Settings panel or `POST /api/config/llm`.
 - `tts_voice`: Kokoro voice ID (e.g. `af_heart`, `am_michael`). See `GET /api/config/tts` for the full list of available voices grouped by category.
 - `tts_speed`: 1.2 is natural cadence for Kokoro. Lower = slower speech.
+- `tts_lang`: TTS language — `en` (Kokoro) or `de` (Piper German). Default: `en`. **Control-center-only** — agents cannot change this.
+- `piper_base`: Piper HTTP server URL. Default: `http://127.0.0.1:5123`.
+- `piper_voice`: Piper voice model name. Default: `thorsten-high`. Options: `thorsten-high`, `thorsten-medium`, `thorsten-low`, `karlsson-low`, `pavoque-low`, `eva_k-x_low`, `kerstin-low`, `ramona-low`, `thorsten_emotional-medium`.
+- `piper_speaker`: Speaker ID for multi-speaker models (e.g. thorsten_emotional emotions: amused=0, angry=1, disgusted=2, drunk=3, neutral=4, sleepy=5, surprised=6, whisper=7). Default: `0`.
+- `piper_length_scale`: Piper speech rate (lower = faster). Default: `1.0`.
+- `piper_noise_scale`: Piper expressiveness/variation. Default: `0.667`.
+- `piper_noise_w`: Piper phoneme duration variation. Default: `0.8`.
+- `piper_sentence_silence`: Silence between sentences in seconds. Default: `0.2`.
 - `llm_top_p_enabled`, `llm_top_k_enabled`: Boolean flags to enable/disable sending `top_p` / `top_k` to the model. Default: both `true`. Useful when remote APIs don't support certain params.
 - `llm_context_tokens`: Total context window size in tokens. 0 = no token-based limit (use `max_history_turns` only). When set, history compaction also respects this budget.
 - All config changes made via the control center or API are saved to `config.json` automatically and take effect immediately. LLM model changes are hot-loaded on the next turn — no restart needed.
@@ -222,9 +244,10 @@ cd /path/to/gateway
 bin/start.sh
 ```
 
-This starts both processes in the foreground:
-1. **mlx_audio server** on `127.0.0.1:8765` — handles ASR and TTS model inference
-2. **Gateway** (FastAPI/uvicorn) on `127.0.0.1:8996` — phone API, control center UI, agent interface
+This starts all processes in the foreground:
+1. **mlx_audio server** on `127.0.0.1:8765` — handles ASR and Kokoro TTS model inference
+2. **Piper TTS server** on `127.0.0.1:5123` — handles German TTS (if voice model present)
+3. **Gateway** (FastAPI/uvicorn) on `127.0.0.1:8996` — phone API, control center UI, agent interface
 
 The script waits for mlx_audio to be healthy before starting the gateway. LLM is preloaded at gateway startup. Ctrl+C stops both.
 
@@ -263,8 +286,8 @@ lsof -ti :8765 | xargs kill 2>/dev/null   # mlx_audio
 ### Checking status
 
 ```bash
-# Are both processes listening?
-lsof -i :8996 -i :8765 | grep LISTEN
+# Are all processes listening?
+lsof -i :8996 -i :8765 -i :5123 | grep LISTEN
 
 # Full health check
 curl -s http://127.0.0.1:8996/api/status | python3 -m json.tool
@@ -272,6 +295,7 @@ curl -s http://127.0.0.1:8996/api/status | python3 -m json.tool
 
 In the status response, check:
 - `mlx_audio.ok` should be `true` — if `false` or missing, mlx_audio is not running
+- `piper.ok` should be `true` when German TTS is needed
 - `llm.loaded` should be `true` — if `false`, LLM failed to load
 
 ### Manual start (for debugging)
@@ -331,6 +355,8 @@ echo "ASR warming in background (~90s)..."
 ```
 
 The LLM is automatically pre-warmed at gateway startup when running in local MLX mode (i.e. `llm_base_url` is empty). Calls will work for greetings and forced replies immediately after TTS warmup; ASR warmup is only needed before the first real voice turn.
+
+Piper does not need explicit warming — the ONNX model loads in ~350ms on first request. However, the first German TTS request will have this minor startup delay.
 
 ## Phone Connection
 
@@ -465,19 +491,22 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 | `POST` | `/api/config/call` | Update call policy + security settings |
 | `POST` | `/api/call/inject` | Inject TTS message — `{"text": "...", "session_id": "..."}` |
 | `POST` | `/api/call/dial` | Dial outbound call — `{"number": "+49..."}` |
+| `POST` | `/api/call/hangup` | Force hang up active call — `{"session_id": "..."}` (optional). Sends ADB hangup broadcast and ends gateway session. |
 | `GET` | `/api/caller-history` | List saved caller histories (number, total_calls, last_call_at) |
 | `DELETE` | `/api/caller-history/{number}` | Delete saved history for a caller number |
 | `WS` | `/ws/events` | Real-time event stream for UI |
 
 ### TTS Config API
 
-**`GET /api/config/tts`** — Returns current TTS settings and the full list of available voices.
+**`GET /api/config/tts`** — Returns current TTS settings. Response shape depends on active language.
 
+When `lang: "en"` (Kokoro):
 ```json
 {
+  "lang": "en",
+  "model": "mlx-community/Kokoro-82M-bf16",
   "voice": "af_heart",
   "speed": 1.2,
-  "model": "mlx-community/Kokoro-82M-bf16",
   "voices": {
     "American Female": ["af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky"],
     "American Male": ["am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa"],
@@ -487,24 +516,43 @@ The phone reads `audio_base64` first, falls back to `audio_wav_base64`, then `au
 }
 ```
 
-The `voices` dict is populated for Kokoro models. For non-Kokoro TTS models, `voices` is `{}` and the user must type a voice ID manually.
-
-**`POST /api/config/tts`** — Updates TTS voice and/or speed. Accepts short or prefixed keys:
-
-```bash
-curl -X POST http://127.0.0.1:8996/api/config/tts \
-  -H "Content-Type: application/json" \
-  -d '{"voice": "am_michael", "speed": 1.0}'
+When `lang: "de"` (Piper):
+```json
+{
+  "lang": "de",
+  "model": "mlx-community/Kokoro-82M-bf16",
+  "piper_voice": "thorsten-high",
+  "piper_speaker": 0,
+  "piper_length_scale": 1.0,
+  "piper_noise_scale": 0.667,
+  "piper_noise_w": 0.8,
+  "piper_sentence_silence": 0.2,
+  "voices": {
+    "Male": ["thorsten-high", "thorsten-medium", "thorsten-low", "karlsson-low", "pavoque-low"],
+    "Female": ["eva_k-x_low", "kerstin-low", "ramona-low"],
+    "Emotional": ["thorsten_emotional-medium"]
+  },
+  "emotions": {"amused": 0, "angry": 1, "disgusted": 2, "drunk": 3, "neutral": 4, "sleepy": 5, "surprised": 6, "whisper": 7}
+}
 ```
 
-| Field | Aliases | Type | Description |
-|-------|---------|------|-------------|
-| `voice` | `tts_voice` | string | Kokoro voice ID (e.g. `af_heart`, `am_michael`, `bf_emma`) |
-| `speed` | `tts_speed` | float | Speech speed. 1.2 = natural Kokoro cadence. Lower = slower. |
+**`POST /api/config/tts`** — Updates TTS settings. Accepts:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lang` | string | `"en"` or `"de"` — switches TTS engine. **Control-center-only.** |
+| `voice` / `tts_voice` | string | Kokoro voice ID (English mode) |
+| `speed` / `tts_speed` | float | Kokoro speed (English mode) |
+| `piper_voice` | string | Piper voice model name (German mode) |
+| `piper_speaker` | int | Piper speaker ID (German mode) |
+| `piper_length_scale` | float | Piper speech rate (German mode) |
+| `piper_noise_scale` | float | Piper expressiveness (German mode) |
+| `piper_noise_w` | float | Piper duration variation (German mode) |
+| `piper_sentence_silence` | float | Piper sentence pause in seconds (German mode) |
 
 Returns the full TTS config response (same shape as GET). Saves to `config.json`. Publishes `config.tts_updated` event.
 
-**`POST /api/tts/preview`** — Synthesize a sample phrase with a given voice. Returns audio for playback.
+**`POST /api/tts/preview`** — Synthesize a sample phrase. Routes to Kokoro (English) or Piper (German) based on current `tts_lang`.
 
 ```bash
 curl -X POST http://127.0.0.1:8996/api/tts/preview \
@@ -514,20 +562,11 @@ curl -X POST http://127.0.0.1:8996/api/tts/preview \
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `text` | no | `"Hello, this is a voice preview."` | Text to synthesize |
-| `voice` | no | current `tts_voice` | Voice ID to preview |
-| `speed` | no | current `tts_speed` | Speed to preview |
+| `text` | no | `"Hello, this is a voice preview."` (EN) / `"Hallo, das ist eine Sprachvorschau."` (DE) | Text to synthesize |
+| `voice` | no | current `tts_voice` | Voice ID to preview (English only) |
+| `speed` | no | current `tts_speed` | Speed to preview (English only) |
 
-```json
-{
-  "ok": true,
-  "audio_base64": "<base64 WAV>",
-  "voice": "am_michael",
-  "speed": 1.0
-}
-```
-
-Calls the mlx_audio sidecar directly. Timeout: 180s. Does not affect the current config — use `POST /api/config/tts` to apply.
+Does not affect the current config — use `POST /api/config/tts` to apply.
 
 ### LLM Config API
 
@@ -781,19 +820,20 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `set_instructions` | `instructions`, `session_id`, `scope` | Set instructions; scope: `global`, `session`, or `turn` |
 | `set_call_config` | `config` | Update call policy settings (non-security subset only) |
 | `dial` | `number` | Dial outbound call |
+| `hangup` | `session_id` (optional) | Force hang up the active call and end gateway session |
 | `get_call_state` | `session_id` | Query full call state (history, instructions, takeover status) |
 | `inject_context` | `session_id`, `context` | Inject/replace agent knowledge for a session |
 | `clear_context` | `session_id` | Clear injected agent knowledge |
 | `end_session` | `session_id` | Mark a session as ended (hung up) |
 | `ping` | — | Heartbeat |
 
-**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `end_session.ack`, `pong`.
+**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `hangup.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `end_session.ack`, `pong`.
 
 **`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
 
 Allowed keys: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `keep_history`, `tts_voice`, `tts_speed`.
 
-Blocked from agents: `auth_passphrase`, `auth_*`, `caller_allowlist`, `caller_blocklist`, `unknown_callers_allowed`. These can only be changed via `POST /api/config/call` (control center).
+**Not allowed from agents**: `tts_lang` (language switching is control-center-only), `piper_*` settings, `auth_*`, `caller_allowlist`, `caller_blocklist`, `unknown_callers_allowed`.
 
 ### Takeover turn protocol (`request_id` correlation)
 
@@ -830,7 +870,7 @@ The gateway uses per-session asyncio locks to coordinate concurrent access to se
 
 This prevents races where an `inject_context` arrives mid-prompt-assembly, ensuring the LLM always sees a consistent snapshot of session state.
 
-Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `turn.caller_rejected`, `turn.authenticated`, `turn.auth_failed`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `agent.context_injected`, `agent.context_cleared`, `instructions.updated`, `config.tts_updated`, `config.llm_updated`, `config.call_updated`, `call.dial`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
+Agent receives all event bus events: `turn.started`, `turn.transcript`, `turn.reply`, `turn.complete`, `turn.error`, `turn.caller_rejected`, `turn.authenticated`, `turn.auth_failed`, `agent.connected`, `agent.disconnected`, `agent.inject`, `agent.takeover`, `agent.release`, `agent.context_injected`, `agent.context_cleared`, `instructions.updated`, `config.tts_updated`, `config.llm_updated`, `config.call_updated`, `call.dial`, `call.hangup`, `status.update`. The `turn.complete` event includes `transcript`, `reply`, and `session_id` alongside `metrics`.
 
 ## File Structure
 
@@ -853,6 +893,7 @@ gateway/
 ├── requirements.txt        # Base Python deps
 ├── bin/start.sh            # Start mlx_audio + gateway
 ├── bin/stop.sh             # Stop both
+├── voices/                 # Piper TTS voice models (.onnx) — gitignored except .gitkeep
 ├── .gitignore              # Excludes .venv/, .models/, sessions/, tmp/
 ├── .venv/                  # Python virtual environment (not tracked)
 ├── .models/                # HuggingFace model cache (not tracked)
@@ -883,6 +924,9 @@ curl -s -X POST http://127.0.0.1:8765/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"mlx-community/Kokoro-82M-bf16","input":"Hello.","voice":"af_heart","speed":1.2,"response_format":"wav"}' \
   -o /dev/null -w "OK: TTS (%{size_download} bytes)\n"
+
+# 3b. Piper TTS works (German)
+curl -s -X POST http://127.0.0.1:5123/ -d "Hallo, das ist ein Test." -o /dev/null -w "OK: Piper (%{size_download} bytes)\n"
 
 # 4. Gateway health
 curl -s -H "Authorization: Bearer localdev" http://127.0.0.1:8996/health | python3 -m json.tool
@@ -926,6 +970,13 @@ Check `tmp/mlx_audio.log`. Common causes:
 
 ### First turn slow / times out / greeting fails
 Pre-warm models after startup. First TTS call loads Kokoro (~2s), first ASR call loads Parakeet (~90s on M4 Max). LLM is pre-warmed automatically. Without warming, the greeting turn can take long enough that the caller hangs up before hearing anything. Always warm models after starting services — `bin/start.sh` handles this automatically, but if starting manually, run the warmup commands from the "Pre-warming Models" section above.
+
+### Piper TTS returns error / German doesn't work
+- Check Piper is running: `lsof -i :5123 | grep LISTEN`
+- Check model file exists: `ls -la voices/de_DE-thorsten-high.onnx`
+- Missing Flask: `pip install flask` (Piper HTTP server requires it)
+- Missing pathvalidate: `pip install pathvalidate`
+- If Piper didn't start, check `PIPER_MODEL` path in start.sh matches voice file location
 
 ### Config changes not taking effect
 Config changes made via the control center or API are saved to `config.json` automatically and take effect immediately. LLM model changes are hot-loaded on the next turn — no restart needed. Call `POST /api/config` to force a full reload from disk. mlx_audio model changes require mlx_audio restart.

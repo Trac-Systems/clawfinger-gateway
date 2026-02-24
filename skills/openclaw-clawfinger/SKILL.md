@@ -62,6 +62,7 @@ openclaw gateway restart
 | Tool | Description |
 |------|-------------|
 | `clawfinger_dial` | Dial an outbound phone call (phone must be connected via ADB) |
+| `clawfinger_hangup` | Force hang up the active phone call via ADB and end the gateway session |
 | `clawfinger_inject` | Inject a TTS message into the active call — text is synthesized and played to the caller |
 | `clawfinger_takeover` | Take over LLM control for a session — you receive transcripts and must provide replies |
 | `clawfinger_release` | Release LLM control back to the local gateway LLM |
@@ -80,7 +81,7 @@ openclaw gateway restart
 | Tool | Description |
 |------|-------------|
 | `clawfinger_call_config_get` | Read call policy: auto-answer, greetings, caller filtering, max duration, auth |
-| `clawfinger_call_config_set` | Update call policy settings (pass only fields to change). Allowed fields: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `keep_history`, `tts_voice`, `tts_speed`. |
+| `clawfinger_call_config_set` | Update call policy settings (pass only fields to change). Allowed fields: `greeting_incoming`, `greeting_outgoing`, `greeting_owner`, `max_duration_sec`, `max_duration_message`, `call_auto_answer`, `call_auto_answer_delay_ms`, `keep_history`, `tts_voice`, `tts_speed`. **Not allowed**: `tts_lang` (language is control-center-only), `piper_*` settings. |
 
 ## WS Bridge
 
@@ -202,6 +203,7 @@ All gateway operations are also available as direct `/clawfinger` subcommands th
 | `/clawfinger sessions` | List active session IDs |
 | `/clawfinger state <session_id>` | Full call state: history, instructions, takeover status |
 | `/clawfinger dial <number>` | Dial outbound call (e.g. `+49123456789`) |
+| `/clawfinger hangup [session_id]` | Force hang up the active call and end gateway session |
 | `/clawfinger inject <text>` | Inject TTS into active call (uses first session) |
 | `/clawfinger inject <session_id> <text>` | Inject TTS into a specific session |
 | `/clawfinger takeover <session_id>` | Take over LLM control for a session |
@@ -210,7 +212,7 @@ All gateway operations are also available as direct `/clawfinger` subcommands th
 | `/clawfinger context set <session_id> <text>` | Inject/replace knowledge for a session |
 | `/clawfinger context clear <session_id>` | Clear injected knowledge |
 | `/clawfinger config call` | Show call policy settings (auto-answer, greetings, filtering) |
-| `/clawfinger config tts` | Show TTS voice and speed settings |
+| `/clawfinger config tts` | Show TTS settings (voice, speed, language, Piper params if German) |
 | `/clawfinger config llm` | Show LLM model and generation params |
 | `/clawfinger instructions <text>` | Set global LLM system instructions |
 | `/clawfinger instructions <session_id> <text>` | Set per-session LLM instructions |

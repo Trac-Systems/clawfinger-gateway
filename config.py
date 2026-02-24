@@ -86,6 +86,16 @@ def _migrate(cfg: dict[str, Any]) -> None:
     cfg.setdefault("tts_model", "mlx-community/Kokoro-82M-bf16")
     cfg.setdefault("tts_voice", "am_adam")
     cfg.setdefault("tts_speed", 1.2)
+    cfg.setdefault("tts_lang", "en")
+
+    # Piper TTS defaults (German)
+    cfg.setdefault("piper_base", "http://127.0.0.1:5123")
+    cfg.setdefault("piper_voice", "thorsten-high")
+    cfg.setdefault("piper_speaker", 0)
+    cfg.setdefault("piper_length_scale", 1.0)
+    cfg.setdefault("piper_noise_scale", 0.667)
+    cfg.setdefault("piper_noise_w", 0.8)
+    cfg.setdefault("piper_sentence_silence", 0.2)
 
     # LLM extended settings
     cfg.setdefault("llm_top_p_enabled", True)

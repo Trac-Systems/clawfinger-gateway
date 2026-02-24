@@ -82,6 +82,7 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
   <div class="status">
     <span><span class="dot" id="dot-ws"></span>WS</span>
     <span><span class="dot" id="dot-mlx"></span>MLX Audio</span>
+    <span><span class="dot" id="dot-piper"></span>Piper</span>
     <span><span class="dot" id="dot-llm"></span>LLM</span>
     <span id="uptime"></span>
   </div>
@@ -106,6 +107,7 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
         <button onclick="doDial()">Dial</button>
       </div>
       <div id="dial-feedback" style="font-size:11px;margin-top:4px"></div>
+      <button onclick="doHangup()" style="background:var(--red);margin-top:4px;width:100%">Hang Up</button>
       <hr style="border-color:var(--border);margin:12px 0">
       <label style="font-size:12px;color:var(--fg2)">Inject TTS message:</label>
       <textarea id="inject-text" placeholder="Type text to speak into active call..."></textarea>
@@ -250,14 +252,54 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
 
   <!-- TTS Settings -->
   <div class="panel">
-    <div class="panel-head">TTS Settings</div>
+    <div class="panel-head">TTS Settings <span id="tts-lang-badge" class="badge connected" style="font-size:11px">EN</span></div>
     <div class="panel-body">
-      <label style="font-size:12px;color:var(--fg2)">Voice:</label>
-      <select id="tts-voice" style="width:100%"></select>
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--fg2)">Language:</label>
+        <div class="row" style="margin-top:4px;gap:16px">
+          <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="radio" name="tts-lang" value="en" checked onchange="switchTtsLang('en')" style="width:auto"> English
+          </label>
+          <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="radio" name="tts-lang" value="de" onchange="switchTtsLang('de')" style="width:auto"> German
+          </label>
+        </div>
+      </div>
 
-      <div style="margin-top:8px">
-        <label style="font-size:12px;color:var(--fg2)">Speed: <span id="tts-speed-val">1.2</span></label>
-        <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.2" oninput="document.getElementById('tts-speed-val').textContent=this.value">
+      <!-- English (Kokoro) controls -->
+      <div id="tts-en-controls">
+        <label style="font-size:12px;color:var(--fg2)">Voice:</label>
+        <select id="tts-voice" style="width:100%"></select>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Speed: <span id="tts-speed-val">1.2</span></label>
+          <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.2" oninput="document.getElementById('tts-speed-val').textContent=this.value">
+        </div>
+      </div>
+
+      <!-- German (Piper) controls -->
+      <div id="tts-de-controls" style="display:none">
+        <label style="font-size:12px;color:var(--fg2)">Voice:</label>
+        <select id="piper-voice" style="width:100%"></select>
+        <div id="piper-emotion-row" style="margin-top:8px;display:none">
+          <label style="font-size:12px;color:var(--fg2)">Emotion:</label>
+          <select id="piper-emotion" style="width:100%"></select>
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Speed (length_scale): <span id="piper-speed-val">1.0</span></label>
+          <input type="range" id="piper-speed" min="0.5" max="2.0" step="0.05" value="1.0" oninput="document.getElementById('piper-speed-val').textContent=this.value">
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Expressiveness: <span id="piper-noise-val">0.667</span></label>
+          <input type="range" id="piper-noise" min="0" max="1" step="0.01" value="0.667" oninput="document.getElementById('piper-noise-val').textContent=this.value">
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Duration variation: <span id="piper-noisew-val">0.8</span></label>
+          <input type="range" id="piper-noisew" min="0" max="1" step="0.01" value="0.8" oninput="document.getElementById('piper-noisew-val').textContent=this.value">
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Sentence pause: <span id="piper-silence-val">0.2</span>s</label>
+          <input type="range" id="piper-silence" min="0" max="1" step="0.05" value="0.2" oninput="document.getElementById('piper-silence-val').textContent=this.value">
+        </div>
       </div>
 
       <div class="row" style="margin-top:12px">
@@ -415,6 +457,8 @@ function handleEvent(evt) {
     loadInstructions();
   } else if (t === 'call.dial') {
     addMonitorLine(`[dial] ${d.number}`, 'meta');
+  } else if (t === 'call.hangup') {
+    addMonitorLine(`[hangup] Call ended${d.session_id ? ' (session ' + d.session_id.slice(0,8) + ')' : ''}`, 'meta');
   }
 }
 
@@ -521,6 +565,15 @@ async function loadStatus() {
     const s = await r.json();
 
     document.getElementById('dot-mlx').className = 'dot ' + (s.mlx_audio?.ok ? 'ok' : 'err');
+    const piperOk = s.mlx_audio?.piper?.ok;
+    document.getElementById('dot-piper').className = 'dot ' + (piperOk ? 'ok' : (piperOk === false ? 'warn' : 'err'));
+    // Enable/disable German radio based on Piper availability
+    const deRadio = document.querySelector('input[name="tts-lang"][value="de"]');
+    if (deRadio) {
+      deRadio.disabled = !piperOk;
+      deRadio.parentElement.style.opacity = piperOk ? '1' : '0.4';
+      deRadio.parentElement.title = piperOk ? '' : 'Piper TTS not running';
+    }
     const llmOk = s.llm?.loaded || s.llm?.configured;
     document.getElementById('dot-llm').className = 'dot ' + (llmOk ? 'ok' : 'warn');
     document.getElementById('uptime').textContent = formatDuration(s.uptime_s || 0);
@@ -599,6 +652,18 @@ async function doDial() {
     fb.style.color = 'var(--red)';
     fb.textContent = 'Request failed';
   }
+}
+
+// --- Hangup ---
+async function doHangup() {
+  const fb = document.getElementById('dial-feedback');
+  fb.style.color = 'var(--fg2)'; fb.textContent = 'Hanging up...';
+  try {
+    const r = await fetch(`${BASE}/api/call/hangup`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const j = await r.json();
+    fb.style.color = j.ok ? 'var(--green)' : 'var(--red)';
+    fb.textContent = j.ok ? 'Hung up' : (j.detail || 'Hangup failed');
+  } catch(e) { fb.style.color = 'var(--red)'; fb.textContent = 'Request failed'; }
 }
 
 // --- Instructions ---
@@ -729,41 +794,129 @@ async function applySecurity() {
 }
 
 // --- TTS Settings ---
+let currentTtsLang = 'en';
+
+function _populateVoiceSelect(sel, voices, selectedVoice) {
+  sel.innerHTML = '';
+  if (Object.keys(voices).length) {
+    for (const [group, ids] of Object.entries(voices)) {
+      const og = document.createElement('optgroup');
+      og.label = group;
+      for (const id of ids) {
+        const opt = document.createElement('option');
+        opt.value = id; opt.textContent = id;
+        if (id === selectedVoice) opt.selected = true;
+        og.appendChild(opt);
+      }
+      sel.appendChild(og);
+    }
+  } else if (selectedVoice) {
+    const opt = document.createElement('option');
+    opt.value = selectedVoice; opt.textContent = selectedVoice; opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function _showTtsLang(lang) {
+  currentTtsLang = lang;
+  document.getElementById('tts-en-controls').style.display = lang === 'en' ? '' : 'none';
+  document.getElementById('tts-de-controls').style.display = lang === 'de' ? '' : 'none';
+  document.querySelector(`input[name="tts-lang"][value="${lang}"]`).checked = true;
+  document.getElementById('tts-lang-badge').textContent = lang.toUpperCase();
+}
+
+async function switchTtsLang(lang) {
+  const fb = document.getElementById('tts-feedback');
+  fb.style.color = 'var(--fg2)'; fb.textContent = 'Switching...';
+  try {
+    const r = await fetch(`${BASE}/api/config/tts`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({lang})
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      fb.style.color = 'var(--red)'; fb.textContent = j.error || 'Switch failed';
+      // Revert radio to current language
+      _showTtsLang(currentTtsLang);
+      setTimeout(() => { fb.textContent = ''; }, 4000);
+      return;
+    }
+    await loadTtsConfig();
+    fb.style.color = 'var(--green)'; fb.textContent = lang === 'de' ? 'German' : 'English';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)'; fb.textContent = 'Switch failed';
+    _showTtsLang(currentTtsLang);
+  }
+}
+
 async function loadTtsConfig() {
   try {
     const r = await fetch(`${BASE}/api/config/tts`);
     const c = await r.json();
-    const sel = document.getElementById('tts-voice');
-    sel.innerHTML = '';
+    const lang = c.lang || 'en';
+    _showTtsLang(lang);
     const voices = c.voices || {};
-    if (Object.keys(voices).length) {
-      for (const [group, ids] of Object.entries(voices)) {
-        const og = document.createElement('optgroup');
-        og.label = group;
-        for (const id of ids) {
-          const opt = document.createElement('option');
-          opt.value = id; opt.textContent = id;
-          if (id === c.voice) opt.selected = true;
-          og.appendChild(opt);
+
+    if (lang === 'de') {
+      _populateVoiceSelect(document.getElementById('piper-voice'), voices, c.piper_voice);
+      // Show emotion selector for emotional voices
+      const piperVoiceSel = document.getElementById('piper-voice');
+      const emotionRow = document.getElementById('piper-emotion-row');
+      const emotionSel = document.getElementById('piper-emotion');
+      function updateEmotionVisibility() {
+        const isEmotional = piperVoiceSel.value.includes('emotional');
+        emotionRow.style.display = isEmotional ? '' : 'none';
+        if (isEmotional && c.emotions) {
+          emotionSel.innerHTML = '';
+          for (const [name, id] of Object.entries(c.emotions)) {
+            const opt = document.createElement('option');
+            opt.value = id; opt.textContent = name;
+            if (id === c.piper_speaker) opt.selected = true;
+            emotionSel.appendChild(opt);
+          }
         }
-        sel.appendChild(og);
       }
+      piperVoiceSel.onchange = updateEmotionVisibility;
+      updateEmotionVisibility();
+      // Sliders
+      const ls = document.getElementById('piper-speed');
+      ls.value = c.piper_length_scale; document.getElementById('piper-speed-val').textContent = c.piper_length_scale;
+      const ns = document.getElementById('piper-noise');
+      ns.value = c.piper_noise_scale; document.getElementById('piper-noise-val').textContent = c.piper_noise_scale;
+      const nw = document.getElementById('piper-noisew');
+      nw.value = c.piper_noise_w; document.getElementById('piper-noisew-val').textContent = c.piper_noise_w;
+      const ss = document.getElementById('piper-silence');
+      ss.value = c.piper_sentence_silence; document.getElementById('piper-silence-val').textContent = c.piper_sentence_silence;
     } else {
-      const opt = document.createElement('option');
-      opt.value = c.voice; opt.textContent = c.voice; opt.selected = true;
-      sel.appendChild(opt);
+      _populateVoiceSelect(document.getElementById('tts-voice'), voices, c.voice);
+      const speedEl = document.getElementById('tts-speed');
+      speedEl.value = c.speed; document.getElementById('tts-speed-val').textContent = c.speed;
     }
-    const speedEl = document.getElementById('tts-speed');
-    speedEl.value = c.speed; document.getElementById('tts-speed-val').textContent = c.speed;
   } catch(e) {}
 }
 
 async function applyTtsConfig() {
   const fb = document.getElementById('tts-feedback');
-  const body = {
-    voice: document.getElementById('tts-voice').value,
-    speed: parseFloat(document.getElementById('tts-speed').value),
-  };
+  let body;
+  if (currentTtsLang === 'de') {
+    body = {
+      piper_voice: document.getElementById('piper-voice').value,
+      piper_length_scale: parseFloat(document.getElementById('piper-speed').value),
+      piper_noise_scale: parseFloat(document.getElementById('piper-noise').value),
+      piper_noise_w: parseFloat(document.getElementById('piper-noisew').value),
+      piper_sentence_silence: parseFloat(document.getElementById('piper-silence').value),
+    };
+    // Include speaker (emotion) if emotional voice
+    if (document.getElementById('piper-voice').value.includes('emotional')) {
+      body.piper_speaker = parseInt(document.getElementById('piper-emotion').value, 10);
+    }
+  } else {
+    body = {
+      voice: document.getElementById('tts-voice').value,
+      speed: parseFloat(document.getElementById('tts-speed').value),
+    };
+  }
   try {
     const r = await fetch(`${BASE}/api/config/tts`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -782,12 +935,14 @@ async function doTtsPreview() {
   const fb = document.getElementById('tts-feedback');
   fb.style.color = 'var(--fg2)'; fb.textContent = 'Generating...';
   try {
+    let body = {};
+    if (currentTtsLang === 'en') {
+      body.voice = document.getElementById('tts-voice').value;
+      body.speed = parseFloat(document.getElementById('tts-speed').value);
+    }
     const r = await fetch(`${BASE}/api/tts/preview`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        voice: document.getElementById('tts-voice').value,
-        speed: parseFloat(document.getElementById('tts-speed').value),
-      })
+      body: JSON.stringify(body)
     });
     const j = await r.json();
     if (j.ok && j.audio_base64) {

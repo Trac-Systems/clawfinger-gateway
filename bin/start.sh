@@ -18,19 +18,19 @@ mkdir -p "$HF_HOME"
 
 MLX_AUDIO_HOST="${MLX_AUDIO_HOST:-127.0.0.1}"
 MLX_AUDIO_PORT="${MLX_AUDIO_PORT:-8765}"
+PIPER_PORT="${PIPER_PORT:-5123}"
+PIPER_MODEL="${PIPER_MODEL:-$GW_DIR/voices/de_DE-thorsten-high.onnx}"
 GW_HOST="${GW_HOST:-127.0.0.1}"
 GW_PORT="${GW_PORT:-8996}"
 
 cleanup() {
   echo "[start.sh] Stopping..."
-  if [ -f "$PID_DIR/mlx_audio.pid" ]; then
-    kill "$(cat "$PID_DIR/mlx_audio.pid")" 2>/dev/null || true
-    rm -f "$PID_DIR/mlx_audio.pid"
-  fi
-  if [ -f "$PID_DIR/gateway.pid" ]; then
-    kill "$(cat "$PID_DIR/gateway.pid")" 2>/dev/null || true
-    rm -f "$PID_DIR/gateway.pid"
-  fi
+  for pidfile in "$PID_DIR/mlx_audio.pid" "$PID_DIR/piper.pid" "$PID_DIR/gateway.pid"; do
+    if [ -f "$pidfile" ]; then
+      kill "$(cat "$pidfile")" 2>/dev/null || true
+      rm -f "$pidfile"
+    fi
+  done
 }
 # Only cleanup on explicit stop signals, NOT on EXIT (which fires on
 # SIGHUP when SSH disconnects and kills background children).
@@ -65,6 +65,24 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
+# Start Piper TTS (German) if model file exists
+PIPER_PID=""
+if [ -f "$PIPER_MODEL" ]; then
+  echo "[start.sh] Starting Piper TTS on $MLX_AUDIO_HOST:$PIPER_PORT..."
+  python -m piper.http_server --model "$PIPER_MODEL" --host "$MLX_AUDIO_HOST" --port "$PIPER_PORT" &
+  PIPER_PID=$!
+  echo "$PIPER_PID" > "$PID_DIR/piper.pid"
+  for i in $(seq 1 30); do
+    if curl -sf -X POST -H "Content-Type: application/json" -d '{"text":"test"}' "http://$MLX_AUDIO_HOST:$PIPER_PORT/" -o /dev/null 2>&1; then
+      echo "[start.sh] Piper ready"
+      break
+    fi
+    sleep 1
+  done
+else
+  echo "[start.sh] Piper model not found at $PIPER_MODEL — skipping German TTS"
+fi
+
 # Start gateway
 echo "[start.sh] Starting gateway on $GW_HOST:$GW_PORT..."
 cd "$GW_DIR"
@@ -72,8 +90,12 @@ python -m uvicorn app:app --host "$GW_HOST" --port "$GW_PORT" --log-level info &
 GW_PID=$!
 echo "$GW_PID" > "$PID_DIR/gateway.pid"
 
-echo "[start.sh] Gateway PID=$GW_PID, mlx_audio PID=$MLX_PID"
+echo "[start.sh] Gateway PID=$GW_PID, mlx_audio PID=$MLX_PID${PIPER_PID:+, Piper PID=$PIPER_PID}"
 echo "[start.sh] Control center: http://$GW_HOST:$GW_PORT/"
 
-# Wait for either to exit
-wait -n "$MLX_PID" "$GW_PID" 2>/dev/null || true
+# Wait for any to exit
+if [ -n "$PIPER_PID" ]; then
+  wait -n "$MLX_PID" "$PIPER_PID" "$GW_PID" 2>/dev/null || true
+else
+  wait -n "$MLX_PID" "$GW_PID" 2>/dev/null || true
+fi

@@ -59,6 +59,10 @@ export class GatewayClient {
     return this.post("/api/call/dial", { number });
   }
 
+  async hangup(sessionId?: string): Promise<any> {
+    return this.post("/api/call/hangup", { session_id: sessionId || "" });
+  }
+
   async inject(text: string, sessionId?: string): Promise<any> {
     return this.post("/api/agent/inject", { text, session_id: sessionId || "" });
   }

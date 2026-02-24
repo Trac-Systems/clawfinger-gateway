@@ -15,6 +15,10 @@ logs/
 # Config contains bearer tokens and API keys
 config.json
 
+# Piper voice models (large ONNX files)
+voices/*.onnx
+voices/*.onnx.json
+
 # IDE
 .idea/
 *.swp

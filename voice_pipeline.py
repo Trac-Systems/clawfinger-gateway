@@ -11,7 +11,7 @@ import httpx
 
 import config
 
-_SPOKEN_ALLOWED_RE = re.compile(r"[^A-Za-z0-9\s\.,!?;:'\"()\-\n]")
+_SPOKEN_ALLOWED_RE = re.compile(r"[^\w\s\.,!?;:'\"()\-\n]", re.UNICODE)
 
 
 def _safe_text(text: str) -> str:
@@ -73,33 +73,67 @@ def transcribe(file_path: Path) -> tuple[str, float]:
     return _safe_text(transcript or ""), (time.perf_counter() - start) * 1000
 
 
-def synthesize(text: str) -> tuple[bytes, float]:
-    """Run TTS on text via mlx_audio. Returns (wav_bytes, tts_ms)."""
+def _synthesize_piper(text: str) -> bytes:
+    """Synthesize text via Piper HTTP server. Returns raw WAV bytes."""
     cfg = config.load()
-    base = cfg["mlx_audio_base"].rstrip("/")
+    piper_base = cfg.get("piper_base", "http://127.0.0.1:5123")
+    payload = {
+        "text": text,
+        "length_scale": cfg.get("piper_length_scale", 1.0),
+        "noise_scale": cfg.get("piper_noise_scale", 0.667),
+        "noise_w": cfg.get("piper_noise_w", 0.8),
+        "sentence_silence": cfg.get("piper_sentence_silence", 0.2),
+    }
+    speaker = cfg.get("piper_speaker", 0)
+    if speaker:
+        payload["speaker_id"] = speaker
+    response = httpx.post(piper_base, json=payload, timeout=30)
+    response.raise_for_status()
+    return response.content
+
+
+def synthesize(text: str) -> tuple[bytes, float]:
+    """Run TTS on text. Routes to Piper (German) or Kokoro (English) based on tts_lang."""
+    cfg = config.load()
     start = time.perf_counter()
 
-    payload = {
-        "model": cfg["tts_model"],
-        "input": _trim_for_tts(text),
-        "voice": cfg["tts_voice"],
-        "speed": cfg["tts_speed"],
-        "response_format": "wav",
-    }
-    response = httpx.post(f"{base}/v1/audio/speech", json=payload, timeout=180)
-    response.raise_for_status()
+    if cfg.get("tts_lang", "en") == "de":
+        wav = _synthesize_piper(_trim_for_tts(text))
+    else:
+        base = cfg["mlx_audio_base"].rstrip("/")
+        payload = {
+            "model": cfg["tts_model"],
+            "input": _trim_for_tts(text),
+            "voice": cfg["tts_voice"],
+            "speed": cfg["tts_speed"],
+            "response_format": "wav",
+        }
+        resp = httpx.post(f"{base}/v1/audio/speech", json=payload, timeout=180)
+        resp.raise_for_status()
+        wav = resp.content
 
-    return response.content, (time.perf_counter() - start) * 1000
+    return wav, (time.perf_counter() - start) * 1000
 
 
 def check_mlx_audio() -> dict:
-    """Check mlx_audio server health. Returns model list or error."""
+    """Check mlx_audio + Piper server health. Returns model list or error."""
     cfg = config.load()
+    result = {}
+    # mlx_audio
     base = cfg["mlx_audio_base"].rstrip("/")
     try:
         response = httpx.get(f"{base}/v1/models", timeout=8)
         response.raise_for_status()
         models = (response.json() or {}).get("data", [])
-        return {"ok": True, "models": [m.get("id") for m in models]}
+        result["mlx_audio"] = {"ok": True, "models": [m.get("id") for m in models]}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        result["mlx_audio"] = {"ok": False, "error": str(exc)}
+    # Piper
+    piper_base = cfg.get("piper_base", "http://127.0.0.1:5123")
+    try:
+        resp = httpx.post(piper_base, json={"text": "test"}, timeout=8)
+        result["piper"] = {"ok": resp.status_code == 200}
+    except Exception as exc:
+        result["piper"] = {"ok": False, "error": str(exc)}
+    result["ok"] = result["mlx_audio"].get("ok", False)
+    return result

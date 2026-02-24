@@ -13,6 +13,8 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 
+import httpx
+
 import agent_interface
 import config
 import instruction_store
@@ -128,6 +130,11 @@ async def api_turn(
     _check_bearer(request)
 
     sid = voice_pipeline.safe_text(session_id) or uuid.uuid4().hex
+
+    # Reject turns for ended sessions (e.g. after forced hangup)
+    if sid and session_store.is_ended(sid):
+        return JSONResponse({"ok": False, "session_id": sid, "ended": True, "detail": "session ended"})
+
     sid = session_store.get_or_create(sid)
 
     if reset_session.lower() == "true":
@@ -593,6 +600,58 @@ async def call_dial(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def _do_hangup() -> dict:
+    """Send hangup command to phone via ADB broadcast."""
+    adb = config.get("adb_path", "adb")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            adb, "devices",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        lines = stdout.decode().strip().split("\n")
+        devices = [l for l in lines[1:] if l.strip() and "device" in l]
+        if not devices:
+            return {"ok": False, "detail": "No ADB device connected"}
+    except Exception as exc:
+        return {"ok": False, "detail": f"ADB check failed: {exc}"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            adb, "shell", "am", "broadcast",
+            "-a", "com.tracsystems.phonebridge.CALL_COMMAND",
+            "-n", "com.tracsystems.phonebridge/.CallCommandReceiver",
+            "--es", "type", "hangup",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            return {"ok": False, "detail": f"ADB broadcast failed: {stderr.decode().strip()}"}
+        return {"ok": True, "detail": stdout.decode().strip()}
+    except Exception as exc:
+        return {"ok": False, "detail": f"Hangup failed: {exc}"}
+
+
+def _single_active_session() -> str:
+    """Return the one active session ID if exactly one exists, else empty string."""
+    active = session_store.active_sessions()
+    return next(iter(active)) if len(active) == 1 else ""
+
+
+@app.post("/api/call/hangup")
+async def call_hangup(request: Request) -> JSONResponse:
+    body = await request.json() if await request.body() else {}
+    session_id = str(body.get("session_id", "")).strip()
+    result = await _do_hangup()
+    if result["ok"]:
+        sid = session_id or _single_active_session()
+        if sid:
+            session_store.end_session(sid)
+            await bus.publish("session.ended", {"session_id": sid}, session_id=sid)
+            result["session_id"] = sid
+        await bus.publish("call.hangup", result)
+    return JSONResponse(result)
+
+
 # ---------------------------------------------------------------------------
 # Agent endpoints
 # ---------------------------------------------------------------------------
@@ -679,6 +738,18 @@ async def agent_ws(ws: WebSocket) -> None:
                 await ws.send_json({"type": "dial.ack", **result})
                 if result["ok"]:
                     await bus.publish("call.dial", {"number": number})
+
+            elif msg_type == "hangup":
+                sid = str(msg.get("session_id", ""))
+                result = await _do_hangup()
+                if result["ok"]:
+                    target = sid or _single_active_session()
+                    if target:
+                        session_store.end_session(target)
+                        await bus.publish("session.ended", {"session_id": target}, session_id=target)
+                        result["session_id"] = target
+                    await bus.publish("call.hangup", result)
+                await ws.send_json({"type": "hangup.ack", **result})
 
             elif msg_type == "get_call_state":
                 sid = str(msg.get("session_id", ""))
@@ -840,19 +911,45 @@ _KOKORO_VOICES = {
     "British Male": ["bm_daniel", "bm_fable", "bm_george", "bm_lewis"],
 }
 
-_TTS_ALIAS = {"voice": "tts_voice", "speed": "tts_speed"}
+_PIPER_VOICES = {
+    "Male": ["thorsten-high", "thorsten-medium", "thorsten-low", "karlsson-low", "pavoque-low"],
+    "Female": ["eva_k-x_low", "kerstin-low", "ramona-low"],
+    "Emotional": ["thorsten_emotional-medium"],
+}
+
+_PIPER_EMOTIONS = {
+    "amused": 0, "angry": 1, "disgusted": 2, "drunk": 3,
+    "neutral": 4, "sleepy": 5, "surprised": 6, "whisper": 7,
+}
+
+_TTS_ALIAS = {"voice": "tts_voice", "speed": "tts_speed", "lang": "tts_lang"}
+
+_TTS_WRITABLE_KEYS = {
+    "tts_voice", "tts_speed", "tts_lang",
+    "piper_voice", "piper_speaker", "piper_length_scale",
+    "piper_noise_scale", "piper_noise_w", "piper_sentence_silence",
+}
 
 
 def _tts_config_response() -> dict:
     cfg = config.load()
-    model = cfg.get("tts_model", "")
-    is_kokoro = "kokoro" in model.lower()
-    return {
-        "voice": cfg.get("tts_voice", "am_adam"),
-        "speed": cfg.get("tts_speed", 1.2),
-        "model": model,
-        "voices": _KOKORO_VOICES if is_kokoro else {},
-    }
+    lang = cfg.get("tts_lang", "en")
+    resp = {"lang": lang, "model": cfg.get("tts_model", "")}
+    if lang == "de":
+        resp["piper_voice"] = cfg.get("piper_voice", "thorsten-high")
+        resp["piper_speaker"] = cfg.get("piper_speaker", 0)
+        resp["piper_length_scale"] = cfg.get("piper_length_scale", 1.0)
+        resp["piper_noise_scale"] = cfg.get("piper_noise_scale", 0.667)
+        resp["piper_noise_w"] = cfg.get("piper_noise_w", 0.8)
+        resp["piper_sentence_silence"] = cfg.get("piper_sentence_silence", 0.2)
+        resp["voices"] = _PIPER_VOICES
+        resp["emotions"] = _PIPER_EMOTIONS
+    else:
+        resp["voice"] = cfg.get("tts_voice", "am_adam")
+        resp["speed"] = cfg.get("tts_speed", 1.2)
+        is_kokoro = "kokoro" in resp["model"].lower()
+        resp["voices"] = _KOKORO_VOICES if is_kokoro else {}
+    return resp
 
 
 @app.get("/api/config/tts")
@@ -864,9 +961,23 @@ async def get_tts_config() -> JSONResponse:
 async def update_tts_config(request: Request) -> JSONResponse:
     body = await request.json()
     cfg = config.load()
+    # If switching to German, verify Piper is reachable first
+    lang_key = _TTS_ALIAS.get("lang", "tts_lang")
+    new_lang = body.get("lang") or body.get("tts_lang")
+    if new_lang == "de" and cfg.get("tts_lang", "en") != "de":
+        piper_base = cfg.get("piper_base", "http://127.0.0.1:5123")
+        try:
+            probe = httpx.post(piper_base, json={"text": "test"}, timeout=5)
+            if probe.status_code != 200:
+                raise Exception(f"HTTP {probe.status_code}")
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"Piper TTS is not running on {piper_base} — cannot switch to German. Start the gateway with a Piper model to enable German TTS."},
+                status_code=400,
+            )
     for body_key, value in body.items():
         cfg_key = _TTS_ALIAS.get(body_key, body_key)
-        if cfg_key in {"tts_voice", "tts_speed"}:
+        if cfg_key in _TTS_WRITABLE_KEYS:
             cfg[cfg_key] = value
     config.save()
     resp = _tts_config_response()
@@ -877,33 +988,46 @@ async def update_tts_config(request: Request) -> JSONResponse:
 @app.post("/api/tts/preview")
 async def tts_preview(request: Request) -> JSONResponse:
     body = await request.json()
-    text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hello, this is a voice preview."
-    preview_voice = str(body.get("voice", "")) or config.get("tts_voice", "am_adam")
-    preview_speed = float(body.get("speed", 0)) or config.get("tts_speed", 1.2)
-
     cfg = config.load()
-    mlx_base = cfg["mlx_audio_base"].rstrip("/")
-    payload = {
-        "model": cfg["tts_model"],
-        "input": voice_pipeline.trim_for_tts(text),
-        "voice": preview_voice,
-        "speed": preview_speed,
-        "response_format": "wav",
-    }
+    lang = cfg.get("tts_lang", "en")
 
-    import httpx as _httpx
-    response = await asyncio.to_thread(
-        lambda: _httpx.post(f"{mlx_base}/v1/audio/speech", json=payload, timeout=180)
-    )
-    response.raise_for_status()
+    if lang == "de":
+        text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hallo, das ist eine Sprachvorschau."
+        trimmed = voice_pipeline.trim_for_tts(text)
+        wav_bytes = await asyncio.to_thread(voice_pipeline._synthesize_piper, trimmed)
+        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+        return JSONResponse({
+            "ok": True,
+            "audio_base64": audio_b64,
+            "lang": "de",
+            "piper_voice": cfg.get("piper_voice", "thorsten-high"),
+        })
+    else:
+        text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hello, this is a voice preview."
+        preview_voice = str(body.get("voice", "")) or config.get("tts_voice", "am_adam")
+        preview_speed = float(body.get("speed", 0)) or config.get("tts_speed", 1.2)
 
-    audio_b64 = base64.b64encode(response.content).decode("ascii")
-    return JSONResponse({
-        "ok": True,
-        "audio_base64": audio_b64,
-        "voice": preview_voice,
-        "speed": preview_speed,
-    })
+        mlx_base = cfg["mlx_audio_base"].rstrip("/")
+        payload = {
+            "model": cfg["tts_model"],
+            "input": voice_pipeline.trim_for_tts(text),
+            "voice": preview_voice,
+            "speed": preview_speed,
+            "response_format": "wav",
+        }
+
+        response = await asyncio.to_thread(
+            lambda: httpx.post(f"{mlx_base}/v1/audio/speech", json=payload, timeout=180)
+        )
+        response.raise_for_status()
+
+        audio_b64 = base64.b64encode(response.content).decode("ascii")
+        return JSONResponse({
+            "ok": True,
+            "audio_base64": audio_b64,
+            "voice": preview_voice,
+            "speed": preview_speed,
+        })
 
 
 # ---------------------------------------------------------------------------

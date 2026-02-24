@@ -7,14 +7,14 @@ A local voice gateway that runs the full **ASR → LLM → TTS** pipeline on App
 1. Phone sends audio over HTTP to the gateway
 2. **ASR** (Parakeet via mlx_audio) transcribes the caller's speech
 3. **LLM** (Qwen 1.5B via mlx-lm, or any OpenAI-compatible endpoint) generates a reply
-4. **TTS** (Kokoro via mlx_audio) synthesizes the reply to speech
+4. **TTS** (Kokoro via mlx_audio for English, Piper Thorsten for German) synthesizes the reply to speech
 5. Audio is returned to the phone as base64 WAV
 
 The gateway also provides:
 
 - **Control Center UI** — web dashboard for live call monitoring, instruction editing, LLM parameter tuning, TTS voice selection, and session logs
 - **Agent Interface** — WebSocket protocol for external agents to observe calls, take over LLM generation, inject TTS messages, inject context knowledge, and query call state
-- **TTS Voice Selection** — choose from 50+ Kokoro voices with live preview
+- **TTS Voice Selection** — Kokoro voices for English (50+), Piper Thorsten voices for German (10 incl. emotional variants), with live preview and language switching
 - **Instruction System** — three-layer prompt management (global / per-session / per-turn)
 - **Conversation Compaction** — LLM-based summarization of older conversation history to stay within context budget
 - **Outbound Dialing** — trigger calls on the phone via ADB broadcast
@@ -33,6 +33,7 @@ The gateway also provides:
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install 'misaki==0.7.0' num2words spacy phonemizer mecab-python3 unidic-lite webrtcvad 'setuptools<81'
+pip install piper-tts flask pathvalidate
 
 # Configure
 cp config.example.json config.json
@@ -64,7 +65,7 @@ The control center is at `http://127.0.0.1:8996`. See [SKILL.md](SKILL.md) for f
 | `GET /api/sessions` | List persisted sessions |
 | `GET /api/sessions/{id}` | Session detail with turn-by-turn transcript |
 | `POST /api/config` | Hot-reload config from disk |
-| `GET/POST /api/config/tts` | View/update TTS voice and speed |
+| `GET/POST /api/config/tts` | View/update TTS voice, speed, language (en/de), Piper settings |
 | `POST /api/tts/preview` | Preview TTS voice with sample audio |
 | `GET/POST /api/config/llm` | View/update LLM generation parameters at runtime |
 | `GET/POST /api/config/call` | View/update call policy + security |

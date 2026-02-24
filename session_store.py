@@ -289,6 +289,7 @@ def end_session(session_id: str) -> bool:
     if session_id not in _META or session_id in _ENDED:
         return False
     _ENDED[session_id] = time.time()
+    bump_generation(session_id)  # invalidate any in-flight turns
     save_session(session_id)
     # Save caller history if keep_history is enabled and caller is known
     if config.get("keep_history", False):
