@@ -1,22 +1,23 @@
-"""In-memory instruction storage with base / session / turn layers."""
+"""In-memory instruction storage with base / session / turn layers.
+
+ALL instruction state is strictly per-session.  There is no shared global
+mutable state — the only cross-session fallback is the *immutable* config
+value ``llm_system_prompt`` which is set at gateway startup and never
+modified at runtime.
+"""
 
 from __future__ import annotations
 
 import config
 
-_BASE: str = ""
 _SESSION: dict[str, str] = {}
 _TURN: dict[str, str] = {}
 _AGENT_KNOWLEDGE: dict[str, str] = {}
 
 
 def get_base() -> str:
-    return _BASE or config.get("llm_system_prompt", "")
-
-
-def set_base(text: str) -> None:
-    global _BASE
-    _BASE = text
+    """Return the immutable default system prompt from config (never mutated at runtime)."""
+    return config.get("llm_system_prompt", "")
 
 
 def get_session(sid: str) -> str:
@@ -64,6 +65,13 @@ def get_agent_knowledge(sid: str) -> str:
 
 
 def clear_agent_knowledge(sid: str) -> None:
+    _AGENT_KNOWLEDGE.pop(sid, None)
+
+
+def clear_all_for_session(sid: str) -> None:
+    """Remove ALL instruction state for a session (call on session end/reset)."""
+    _SESSION.pop(sid, None)
+    _TURN.pop(sid, None)
     _AGENT_KNOWLEDGE.pop(sid, None)
 
 

@@ -106,9 +106,9 @@ def reset(session_id: str) -> str:
     _ENDED.pop(session_id, None)
     _LAST_ACTIVITY.pop(session_id, None)
     _INJECT_QUEUE.pop(session_id, None)
-    # Also clean up agent knowledge for this session
+    # Clean up ALL instruction state for this session
     import instruction_store
-    instruction_store.clear_agent_knowledge(session_id)
+    instruction_store.clear_all_for_session(session_id)
     return get_or_create(session_id)
 
 
@@ -259,6 +259,11 @@ def end_session(session_id: str) -> bool:
         return False
     _ENDED[session_id] = time.time()
     save_session(session_id)
+    # Clean up ALL instruction/knowledge state so nothing bleeds into future sessions
+    import instruction_store
+    instruction_store.clear_all_for_session(session_id)
+    # Drain any pending TTS inject queue
+    _INJECT_QUEUE.pop(session_id, None)
     # Release agent takeover if any
     import agent_interface
     for ws in list(agent_interface._AGENTS):

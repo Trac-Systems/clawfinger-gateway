@@ -605,35 +605,18 @@ async function loadInstructions() {
 }
 
 async function saveInstructions() {
-  const text = document.getElementById('instr-base').value;
   const fb = document.getElementById('instr-feedback');
-  try {
-    const r = await fetch(`${BASE}/api/instructions`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({text})
-    });
-    const j = await r.json();
-    fb.style.color = 'var(--green)';
-    fb.textContent = 'Saved';
-    setTimeout(() => { fb.textContent = ''; }, 2000);
-  } catch(e) {
-    fb.style.color = 'var(--red)';
-    fb.textContent = 'Save failed';
-  }
+  fb.style.color = 'var(--red)';
+  fb.textContent = 'Global instructions disabled (session isolation). Edit llm_system_prompt in config instead.';
+  setTimeout(() => { fb.textContent = ''; }, 5000);
 }
 
 async function resetInstructions() {
-  try {
-    await fetch(`${BASE}/api/instructions`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({text: ''})
-    });
-    loadInstructions();
-    const fb = document.getElementById('instr-feedback');
-    fb.style.color = 'var(--green)';
-    fb.textContent = 'Reset to default';
-    setTimeout(() => { fb.textContent = ''; }, 2000);
-  } catch(e) {}
+  loadInstructions();
+  const fb = document.getElementById('instr-feedback');
+  fb.style.color = 'var(--green)';
+  fb.textContent = 'Showing default from config (read-only)';
+  setTimeout(() => { fb.textContent = ''; }, 3000);
 }
 
 // --- Helpers ---

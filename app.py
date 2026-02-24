@@ -492,11 +492,13 @@ async def get_instructions() -> JSONResponse:
 
 @app.post("/api/instructions")
 async def set_base_instruction(request: Request) -> JSONResponse:
-    body = await request.json()
-    text = str(body.get("text", ""))
-    instruction_store.set_base(text)
-    await bus.publish("instructions.updated", {"scope": "global"})
-    return JSONResponse({"ok": True, "base": instruction_store.get_base()})
+    """Global mutable instructions are disabled to prevent cross-session bleed.
+    Use POST /api/instructions/{sid} for session-scoped instructions instead.
+    The default system prompt is set via llm_system_prompt in config."""
+    return JSONResponse(
+        {"ok": False, "error": "Global mutable instructions disabled. Use /api/instructions/{session_id} instead."},
+        status_code=400,
+    )
 
 
 @app.post("/api/instructions/{sid}")
@@ -630,13 +632,20 @@ async def agent_ws(ws: WebSocket) -> None:
                 sid = str(msg.get("session_id", ""))
                 scope = str(msg.get("scope", "turn"))
                 if scope == "global":
-                    instruction_store.set_base(text)
+                    # Global mutable instructions disabled — cross-session bleed risk
+                    await ws.send_json({"type": "set_instructions.ack", "ok": False,
+                                        "error": "Global scope disabled. Use session or turn scope."})
                 elif scope == "session" and sid:
                     instruction_store.set_session(sid, text)
+                    await ws.send_json({"type": "set_instructions.ack", "ok": True, "scope": scope})
+                    await bus.publish("instructions.updated", {"scope": scope, "session_id": sid})
                 elif scope == "turn" and sid:
                     instruction_store.set_turn(sid, text)
-                await ws.send_json({"type": "set_instructions.ack", "ok": True, "scope": scope})
-                await bus.publish("instructions.updated", {"scope": scope, "session_id": sid})
+                    await ws.send_json({"type": "set_instructions.ack", "ok": True, "scope": scope})
+                    await bus.publish("instructions.updated", {"scope": scope, "session_id": sid})
+                else:
+                    await ws.send_json({"type": "set_instructions.ack", "ok": False,
+                                        "error": "Missing session_id for session/turn scope."})
 
             elif msg_type == "set_call_config":
                 cfg = config.load()

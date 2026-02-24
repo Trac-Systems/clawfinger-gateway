@@ -278,8 +278,8 @@ export default function register(api: OpenClawPluginApi) {
             Type.Literal("turn"),
           ],
           {
-            description: "Scope: global, session, or turn (default: global)",
-            default: "global",
+            description: "Scope: session or turn (default: session). Global scope is disabled.",
+            default: "session",
           },
         ),
       ),
@@ -293,11 +293,18 @@ export default function register(api: OpenClawPluginApi) {
       _id: string,
       params: { text: string; scope?: string; session_id?: string },
     ) {
+      const scope = params.scope === "turn" ? "turn" : "session";
+      if (!params.session_id) {
+        return {
+          content: [{ type: "text", text: "Error: session_id is required." }],
+          details: { ok: false },
+        };
+      }
       bridge.sendRaw({
         type: "set_instructions",
         instructions: params.text,
-        scope: params.scope || "global",
-        session_id: params.session_id || "",
+        scope,
+        session_id: params.session_id,
       });
       return {
         content: [{ type: "text", text: "Instructions set." }],
@@ -469,21 +476,13 @@ export default function register(api: OpenClawPluginApi) {
           return { text: "Usage: /clawfinger config call|tts|llm" };
         }
 
-        // --- instructions [session_id] <text> ---
+        // --- instructions <session_id> <text> ---
         if (action === "instructions") {
-          if (!tokens[1]) return { text: "Usage:\n  /clawfinger instructions <text>  (global)\n  /clawfinger instructions <session_id> <text>  (per-session)" };
-          let sid = "";
-          let text: string;
-          let scope = "global";
-          if (tokens[1].length >= 20 && /^[a-f0-9]+$/i.test(tokens[1]) && tokens[2]) {
-            sid = tokens[1];
-            text = tokens.slice(2).join(" ");
-            scope = "session";
-          } else {
-            text = tokens.slice(1).join(" ");
-          }
-          bridge.sendRaw({ type: "set_instructions", instructions: text, scope, session_id: sid });
-          return { text: `Instructions set (${scope}).` };
+          if (!tokens[1] || !tokens[2]) return { text: "Usage: /clawfinger instructions <session_id> <text>" };
+          const sid = tokens[1];
+          const text = tokens.slice(2).join(" ");
+          bridge.sendRaw({ type: "set_instructions", instructions: text, scope: "session", session_id: sid });
+          return { text: `Instructions set for session ${sid}.` };
         }
 
         // --- help (default) ---
