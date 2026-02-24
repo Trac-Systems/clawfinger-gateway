@@ -366,9 +366,10 @@ async def api_turn(
 
                         reply, llm_ms, llm_model = await asyncio.to_thread(llm_backend.generate, messages)
 
-                # Commit to history
+                # Commit to history + compact once (after both messages)
                 session_store.append(sid, "user", transcript)
                 session_store.append(sid, "assistant", reply)
+                session_store.compact(sid)
 
         await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
 

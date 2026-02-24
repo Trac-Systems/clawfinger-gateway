@@ -132,11 +132,14 @@ def get_history(session_id: str) -> list[dict[str, str]]:
 
 def append(session_id: str, role: str, content: str) -> None:
     _HISTORY.setdefault(session_id, []).append({"role": role, "content": content})
-    compact(session_id)
 
 
 def compact(session_id: str) -> None:
-    """Compact conversation history: summarize oldest messages, keep recent ones."""
+    """Compact conversation history: summarize oldest messages, keep recent ones.
+
+    Called once per turn (after both user+assistant are appended), NOT per append.
+    This avoids double-compaction and ensures we always summarize complete pairs.
+    """
     history = _HISTORY.get(session_id)
     if not history:
         return
@@ -192,8 +195,10 @@ def compact(session_id: str) -> None:
         summary_text, _, _ = llm_backend.generate(messages)
         _SUMMARY[session_id] = summary_text
     except Exception:
-        # If summarization fails, fall back to simple truncation
-        _SUMMARY.pop(session_id, None)
+        # Keep existing summary on failure — don't destroy what we have
+        if not existing_summary:
+            # No prior summary: fall back to raw text of compacted messages
+            _SUMMARY[session_id] = summary_input
 
     # Replace history with just the recent messages
     _HISTORY[session_id] = list(recent)
