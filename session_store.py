@@ -102,6 +102,15 @@ def get_or_create(session_id: str | None = None) -> str:
 
 def reset(session_id: str) -> str:
     bump_generation(session_id)  # invalidate any in-flight turns
+    # Save caller history before wiping state (phone may never call end_session)
+    if config.get("keep_history", False):
+        caller = _CALLER_INFO.get(session_id, {})
+        number = caller.get("number", "")
+        if number:
+            history = _HISTORY.get(session_id, [])
+            summary = _SUMMARY.get(session_id, "")
+            if history:
+                save_caller_history(number, history, summary)
     _HISTORY.pop(session_id, None)
     _META.pop(session_id, None)
     _CALLER_INFO.pop(session_id, None)
