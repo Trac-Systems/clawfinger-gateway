@@ -45,14 +45,14 @@ trim_for_tts = _trim_for_tts
 
 def transcribe(file_path: Path) -> tuple[str, float]:
     """Run ASR on audio file via mlx_audio. Returns (transcript, asr_ms)."""
-    cfg = config.load()
-    base = cfg["mlx_audio_base"].rstrip("/")
+    asr = config.section("asr")
+    base = asr["backend"].rstrip("/")
     start = time.perf_counter()
 
     content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
     with file_path.open("rb") as f:
         files = {"file": (file_path.name, f, content_type)}
-        data = {"model": cfg["stt_model"], "language": cfg["stt_language"]}
+        data = {"model": asr["model"], "language": asr["language"]}
         response = httpx.post(f"{base}/v1/audio/transcriptions", files=files, data=data, timeout=180)
 
     response.raise_for_status()
@@ -75,16 +75,16 @@ def transcribe(file_path: Path) -> tuple[str, float]:
 
 def _synthesize_piper(text: str) -> bytes:
     """Synthesize text via Piper HTTP server. Returns raw WAV bytes."""
-    cfg = config.load()
-    piper_base = cfg.get("piper_base", "http://127.0.0.1:5123")
+    piper = config.section("tts").get("piper", {})
+    piper_base = piper.get("base", "http://127.0.0.1:5123")
     payload = {
         "text": text,
-        "length_scale": cfg.get("piper_length_scale", 1.0),
-        "noise_scale": cfg.get("piper_noise_scale", 0.667),
-        "noise_w": cfg.get("piper_noise_w", 0.8),
-        "sentence_silence": cfg.get("piper_sentence_silence", 0.2),
+        "length_scale": piper.get("length_scale", 1.0),
+        "noise_scale": piper.get("noise_scale", 0.667),
+        "noise_w": piper.get("noise_w", 0.8),
+        "sentence_silence": piper.get("sentence_silence", 0.2),
     }
-    speaker = cfg.get("piper_speaker", 0)
+    speaker = piper.get("speaker", 0)
     if speaker:
         payload["speaker_id"] = speaker
     response = httpx.post(piper_base, json=payload, timeout=30)
@@ -93,19 +93,20 @@ def _synthesize_piper(text: str) -> bytes:
 
 
 def synthesize(text: str) -> tuple[bytes, float]:
-    """Run TTS on text. Routes to Piper (German) or Kokoro (English) based on tts_lang."""
-    cfg = config.load()
+    """Run TTS on text. Routes to Piper (German) or Kokoro (English) based on tts.lang."""
+    tts = config.section("tts")
+    asr = config.section("asr")
     start = time.perf_counter()
 
-    if cfg.get("tts_lang", "en") == "de":
+    if tts.get("lang", "en") == "de":
         wav = _synthesize_piper(_trim_for_tts(text))
     else:
-        base = cfg["mlx_audio_base"].rstrip("/")
+        base = asr["backend"].rstrip("/")
         payload = {
-            "model": cfg["tts_model"],
+            "model": tts["model"],
             "input": _trim_for_tts(text),
-            "voice": cfg["tts_voice"],
-            "speed": cfg["tts_speed"],
+            "voice": tts["voice"],
+            "speed": tts["speed"],
             "response_format": "wav",
         }
         resp = httpx.post(f"{base}/v1/audio/speech", json=payload, timeout=180)
@@ -117,10 +118,11 @@ def synthesize(text: str) -> tuple[bytes, float]:
 
 def check_mlx_audio() -> dict:
     """Check mlx_audio + Piper server health. Returns model list or error."""
-    cfg = config.load()
+    asr = config.section("asr")
+    tts = config.section("tts")
     result = {}
     # mlx_audio
-    base = cfg["mlx_audio_base"].rstrip("/")
+    base = asr["backend"].rstrip("/")
     try:
         response = httpx.get(f"{base}/v1/models", timeout=8)
         response.raise_for_status()
@@ -129,7 +131,8 @@ def check_mlx_audio() -> dict:
     except Exception as exc:
         result["mlx_audio"] = {"ok": False, "error": str(exc)}
     # Piper
-    piper_base = cfg.get("piper_base", "http://127.0.0.1:5123")
+    piper = tts.get("piper", {})
+    piper_base = piper.get("base", "http://127.0.0.1:5123")
     try:
         resp = httpx.post(piper_base, json={"text": "test"}, timeout=8)
         result["piper"] = {"ok": resp.status_code == 200}

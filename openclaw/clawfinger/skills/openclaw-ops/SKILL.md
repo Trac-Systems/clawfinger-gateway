@@ -14,7 +14,7 @@ Operational runbooks for automating the Clawfinger voice gateway using only Open
 Use this when you want quick automation (health monitoring, scheduled policy changes, event-driven actions) without installing the full Clawfinger OpenClaw plugin.
 
 > For full plugin-based automation with real-time WS bridge, takeover, and tool calling, see [OpenClaw Plugin](../openclaw-clawfinger/SKILL.md).
-> For full API reference, see [Voice Gateway](../voice-gateway/SKILL.md).
+> For phone API reference, see [Phone Gateway](../phone-gateway/SKILL.md). For robot API reference, see [Robot Gateway](../robot-gateway/SKILL.md).
 
 ## Prerequisites
 
@@ -257,6 +257,29 @@ curl -s -X POST "$GW/api/session/reset" \
   -d "session_id=$SID" | jq .
 ```
 
+## Robot Operations
+
+### Read robot config
+
+```bash
+curl -s "$GW/api/config/robot" | jq '{
+  enabled: .enabled,
+  model: .model,
+  connected: .connected,
+  capabilities: .capabilities
+}'
+```
+
+### Update robot config
+
+```bash
+curl -s -X POST "$GW/api/config/robot" \
+  -H "Content-Type: application/json" \
+  -d '{"voice": "am_adam", "heartbeat_interval": 10}' | jq .
+```
+
+**Security keys** (`intercom_key`, `safety_stop_on_disconnect`, `enable_low_level`) cannot be set via the API from agents — only from the control center.
+
 ## Combining with OpenClaw Skills
 
 These REST operations can be composed into OpenClaw skills for more complex automation:
@@ -265,5 +288,6 @@ These REST operations can be composed into OpenClaw skills for more complex auto
 - **Post-call cleanup**: Read call state, save transcript, reset session
 - **Escalation**: Monitor sessions, inject context when keywords detected, take over via plugin if needed
 - **Reporting**: Periodic session listing + call state extraction for analytics
+- **Robot monitoring**: Periodic robot status checks, battery alerts, disconnect detection
 
-For real-time event-driven automation (reacting to `turn.complete`, `agent.takeover`, etc.), use the [OpenClaw Clawfinger Plugin](../openclaw-clawfinger/SKILL.md) which provides a persistent WebSocket bridge.
+For real-time event-driven automation (reacting to `turn.complete`, `agent.takeover`, `robot.connected`, etc.), use the [OpenClaw Clawfinger Plugin](../openclaw-clawfinger/SKILL.md) which provides a persistent WebSocket bridge.

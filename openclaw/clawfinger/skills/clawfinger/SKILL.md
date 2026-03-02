@@ -139,6 +139,50 @@ During takeover, if you fail to reply within 30 seconds, the gateway falls back 
 4. clawfinger_context_set       -> push context for the LLM
 ```
 
+## Robot Tools (requires robot connection)
+
+These tools interact with the robot endpoint. They require `robot.enabled: true` and an active robot connection. All tools are capability-gated — they return an error if the connected robot doesn't support the required capability.
+
+| Tool | Capability | Description |
+|------|-----------|-------------|
+| `clawfinger_robot_status` | (all) | Robot status: battery, pose, connectivity, model, current task |
+| `clawfinger_robot_config_get` | (all) | Read robot config (shared + model-specific) |
+| `clawfinger_robot_config_set` | (all) | Update robot config (security keys blocked from agents) |
+
+### Future robot tools (when Intercom transport is built)
+
+| Tool | Capability | Description |
+|------|-----------|-------------|
+| `clawfinger_robot_walk` | `locomotion` | Walk: direction, distance, speed |
+| `clawfinger_robot_turn` | `locomotion` | Turn: angle (degrees) |
+| `clawfinger_robot_stand` / `_sit` / `_stop` | `posture` | Posture commands |
+| `clawfinger_robot_pick_up` | `manipulation` | Pick up object by description |
+| `clawfinger_robot_place` | `manipulation` | Place object at target location |
+| `clawfinger_robot_hand_over` | `manipulation` | Extend hand, wait for take |
+| `clawfinger_robot_gesture` | `gesture` | Wave, point, nod, etc. |
+| `clawfinger_robot_look` | `vision` | Describe scene (camera + VLM) |
+| `clawfinger_robot_snapshot` | `vision` | Return camera frame |
+| `clawfinger_robot_speak` | `audio` | TTS on robot speaker |
+| `clawfinger_robot_listen` | `audio` | Mic capture + ASR |
+| `clawfinger_robot_task` | (any) | Submit compound task (async) |
+| `clawfinger_robot_task_status` | (any) | Check task progress |
+| `clawfinger_robot_task_cancel` | (any) | Cancel running task |
+
+## Cross-Endpoint Workflows
+
+The plugin shares a single WS bridge for both phone and robot commands.
+
+### Phone agent commands robot (between turns)
+
+```
+1. clawfinger_dial +49123456789              (phone)
+2. clawfinger_takeover <sid>                 (phone)
+3. clawfinger_turn_wait                      (phone — caller speaks)
+4. clawfinger_robot_task "get package"       (robot — async)
+5. clawfinger_turn_reply "I've sent the robot to get your package"
+6. clawfinger_robot_task_status <task_id>    (check between turns)
+```
+
 ## Slash Command
 
 All gateway operations are also available as direct `/clawfinger` subcommands that bypass the LLM:
@@ -161,6 +205,7 @@ All gateway operations are also available as direct `/clawfinger` subcommands th
 | `/clawfinger config call` | Show call policy settings (auto-answer, greetings, filtering) |
 | `/clawfinger config tts` | Show TTS settings (voice, speed, language, Piper params if German) |
 | `/clawfinger config llm` | Show LLM model and generation params |
+| `/clawfinger config robot` | Show robot config (model, capabilities, connection) |
 | `/clawfinger instructions <text>` | Set global LLM system instructions |
 | `/clawfinger instructions <session_id> <text>` | Set per-session LLM instructions |
 | `/clawfinger end <session_id>` | Mark a session as ended (hung up) |

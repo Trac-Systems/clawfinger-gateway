@@ -47,7 +47,7 @@ _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _INJECT_QUEUE: dict[str, list[dict[str, str]]] = {}
 
 # Stale session TTL in seconds (no activity → auto-end)
-_SESSION_TTL = 300  # 5 minutes
+_SESSION_TTL = 60  # 1 minute (phone polls every ~5s, so 60s = definitely dead)
 
 # Session generation counter — bumped on reset to invalidate in-flight turns
 _GENERATION: dict[str, int] = {}
@@ -103,7 +103,7 @@ def get_or_create(session_id: str | None = None) -> str:
 def reset(session_id: str) -> str:
     bump_generation(session_id)  # invalidate any in-flight turns
     # Save caller history before wiping state (phone may never call end_session)
-    if config.get("keep_history", False):
+    if config.get("phone.keep_history", False):
         caller = _CALLER_INFO.get(session_id, {})
         number = caller.get("number", "")
         if number:
@@ -144,16 +144,16 @@ def compact(session_id: str) -> None:
     if not history:
         return
 
-    max_turns = config.get("max_history_turns", 8)
+    max_turns = config.get("llm.max_history_turns", 8)
     keep = max(1, max_turns) * 2  # messages to keep verbatim
 
     # Token budget: use explicit config, or auto-detect from loaded model
-    context_limit = config.get("llm_context_tokens", 0)
+    context_limit = config.get("llm.context_tokens", 0)
     if context_limit <= 0:
         import llm_backend
         context_limit = llm_backend.get_context_window()
     if context_limit > 0:
-        reserve = config.get("llm_max_tokens", 400) + 300  # output + system prompt headroom
+        reserve = config.get("llm.max_tokens", 400) + 300  # output + system prompt headroom
         budget = context_limit - reserve
         while keep > 2:
             recent = history[-keep:] if len(history) >= keep else history
@@ -292,7 +292,7 @@ def end_session(session_id: str) -> bool:
     bump_generation(session_id)  # invalidate any in-flight turns
     save_session(session_id)
     # Save caller history if keep_history is enabled and caller is known
-    if config.get("keep_history", False):
+    if config.get("phone.keep_history", False):
         caller = _CALLER_INFO.get(session_id, {})
         number = caller.get("number", "")
         if number:

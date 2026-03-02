@@ -1,9 +1,11 @@
 ---
-name: local-voice-gateway
-description: Local voice gateway for Clawfinger. Use this skill when installing, configuring, running, or troubleshooting the FastAPI gateway (ASR/LLM/TTS), its API endpoints, agent WebSocket protocol, instruction system, or control center UI. Runs on macOS and Linux.
+name: phone-gateway
+description: Clawfinger phone endpoint — installation, configuration, and operations for the FastAPI gateway (ASR/LLM/TTS), phone-specific API endpoints, agent WebSocket protocol, instruction system, and control center UI. Runs on macOS and Linux.
 ---
 
-# Local Voice Gateway — Installation & Operations Skill
+# Phone Gateway — Clawfinger Phone Endpoint
+
+> **This skill covers the phone/voice endpoint.** For robot endpoint, see [`robot-gateway`](../robot-gateway/SKILL.md).
 
 > **Platform**: macOS and Linux. Not compatible with Windows.
 

@@ -536,3 +536,58 @@ python3 test_takeover.py
 | 60s timeout on turn | Agent reply too slow | Check network, agent processing time |
 | Local LLM doesn't resume after release | Release failed | Check `release.ack` was `ok: true` |
 | Phone stops picking up calls | DIALER role reset (reboot) or USB issue | Run post-reboot recovery |
+
+---
+
+## Robot Command Protocol
+
+The same `/api/agent/ws` WebSocket supports robot commands alongside phone commands. Robot messages use the `robot.*` namespace.
+
+### Robot WS messages (agent → gateway)
+
+| Send | Fields | Description |
+|------|--------|-------------|
+| `robot.command` | `command`, `endpoint: "robot"` | Send high-level command (walk, turn, stand, etc.) |
+| `robot.task` | `task`, `endpoint: "robot"` | Submit async compound task |
+| `robot.task_status` | `task_id` | Query task progress |
+| `robot.task_cancel` | `task_id` | Cancel running task |
+| `robot.status` | — | Query robot state (battery, pose, connectivity) |
+| `set_robot_config` | `config: {...}` | Update robot config (security keys blocked) |
+
+### Robot WS messages (gateway → agent)
+
+| Receive | Fields | Description |
+|---------|--------|-------------|
+| `robot.command.ack` | `ok`, `result` | Command result |
+| `robot.task.ack` | `ok`, `task_id` | Task submitted, returns ID for status checks |
+| `robot.task.completed` | `task_id`, `result` | Async task finished |
+| `robot.task.failed` | `task_id`, `error` | Async task failed |
+| `robot.status` | `connected`, `battery`, `pose`, `model`, `capabilities` | Robot state |
+| `robot.connected` | `model`, `capabilities` | Robot came online |
+| `robot.disconnected` | `reason` | Robot went offline |
+
+### Cross-Endpoint Scenarios
+
+Agents connect to a single `/api/agent/ws` and can interleave phone and robot commands freely.
+
+| Scenario | How it works |
+|----------|-------------|
+| Phone agent commands robot | Agent calls `robot.task` (fire-and-forget) between phone turns. Gets `task_id`, checks status later via `robot.task_status`. |
+| Robot agent makes phone call | `dial` command works independently of robot. |
+| Agent sees robot camera during call | `robot.command` with `{"type": "look"}` between phone turns. Non-blocking. |
+| Robot disconnects mid-task | Gateway publishes `robot.disconnected` event. Agent informed on next WS message. |
+
+### Key consideration: turn_reply blocks robot commands
+
+`clawfinger_turn_reply` blocks up to 45s waiting for the next phone turn. For truly parallel operation (robot + phone simultaneously), submit robot tasks via `robot.task` *before* entering the `turn_reply` wait. Tasks execute independently on the Jetson.
+
+### OpenClaw plugin cross-endpoint workflow
+
+```
+1. clawfinger_dial +49123456789              (phone)
+2. clawfinger_takeover <sid>                 (phone)
+3. clawfinger_turn_wait                      (phone — caller speaks)
+4. clawfinger_robot_task "get package"       (robot — async, runs in parallel)
+5. clawfinger_turn_reply "I've sent the robot to get your package"
+6. clawfinger_robot_task_status <task_id>    (check between turns)
+```

@@ -73,12 +73,21 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
 .empty { color: var(--fg2); font-style: italic; font-size: 13px; }
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
 .badge.connected { background: rgba(63, 185, 80, 0.2); color: var(--green); }
+.view-tabs { display: flex; gap: 0; margin-left: 16px; }
+.view-tabs .tab { background: var(--bg3); color: var(--fg2); border: 1px solid var(--border);
+  border-bottom: none; padding: 6px 20px; font-size: 13px; font-weight: 600;
+  cursor: pointer; border-radius: var(--radius) var(--radius) 0 0; }
+.view-tabs .tab.active { background: var(--bg); color: var(--accent); border-bottom: 1px solid var(--bg); }
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>Gateway Control Center</h1>
+  <div class="view-tabs">
+    <button class="tab active" onclick="switchView('phone')">Phone</button>
+    <button class="tab" onclick="switchView('robot')">Robot</button>
+  </div>
   <div class="status">
     <span><span class="dot" id="dot-ws"></span>WS</span>
     <span><span class="dot" id="dot-mlx"></span>MLX Audio</span>
@@ -88,6 +97,7 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
   </div>
 </div>
 
+<div data-view="phone">
 <div class="grid">
   <!-- Live Monitor -->
   <div class="panel">
@@ -383,6 +393,174 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
       </details>
     </div>
   </div>
+</div>
+</div>
+
+<div data-view="robot" style="display:none">
+<div class="grid">
+  <!-- Robot Connection -->
+  <div class="panel">
+    <div class="panel-head">Robot Connection <span id="robot-conn-badge" class="badge" style="background:rgba(248,81,73,0.2);color:var(--red)">Disconnected</span></div>
+    <div class="panel-body">
+      <table class="config-table">
+        <tr><td>Model</td><td id="robot-model">--</td></tr>
+        <tr><td>Transport</td><td id="robot-transport">--</td></tr>
+        <tr><td>Status</td><td id="robot-status">Not connected</td></tr>
+        <tr><td>Latency</td><td id="robot-latency">--</td></tr>
+        <tr><td>Uptime</td><td id="robot-uptime">--</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Robot Status -->
+  <div class="panel">
+    <div class="panel-head">Robot Status</div>
+    <div class="panel-body">
+      <table class="config-table">
+        <tr><td>Battery</td><td id="robot-battery">--</td></tr>
+        <tr><td>Pose</td><td id="robot-pose">--</td></tr>
+        <tr><td>Current Task</td><td id="robot-task">idle</td></tr>
+        <tr><td>Temperatures</td><td id="robot-temps">--</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Task Control -->
+  <div class="panel">
+    <div class="panel-head">Task Control</div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Submit task:</label>
+      <div class="row" style="margin-top:4px">
+        <input id="robot-task-input" placeholder="e.g. walk to the door" style="flex:1">
+        <button onclick="submitRobotTask()" disabled>Send</button>
+      </div>
+      <div id="robot-task-feedback" style="font-size:11px;margin-top:4px"></div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Task history:</label>
+      <div id="robot-task-history"><div class="empty">No tasks.</div></div>
+    </div>
+  </div>
+
+  <!-- Movement Control -->
+  <div class="panel">
+    <div class="panel-head">Movement Control</div>
+    <div class="panel-body" style="text-align:center">
+      <div class="row" style="justify-content:center">
+        <button class="secondary" onclick="robotCmd('walk','forward')" disabled style="padding:8px 16px">Forward</button>
+      </div>
+      <div class="row" style="justify-content:center">
+        <button class="secondary" onclick="robotCmd('turn','left')" disabled style="padding:8px 16px">Left</button>
+        <button class="danger" onclick="robotCmd('stop')" disabled style="padding:8px 16px">STOP</button>
+        <button class="secondary" onclick="robotCmd('turn','right')" disabled style="padding:8px 16px">Right</button>
+      </div>
+      <div class="row" style="justify-content:center">
+        <button class="secondary" onclick="robotCmd('walk','backward')" disabled style="padding:8px 16px">Back</button>
+      </div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <div class="row" style="justify-content:center">
+        <button class="secondary" onclick="robotCmd('stand')" disabled>Stand</button>
+        <button class="secondary" onclick="robotCmd('sit')" disabled>Sit</button>
+        <button class="secondary" onclick="robotCmd('crouch')" disabled>Crouch</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Speed:</label>
+        <input type="range" id="robot-speed" min="0.1" max="1.0" step="0.1" value="0.3" disabled style="flex:1">
+        <span id="robot-speed-val" style="font-size:12px;width:40px">0.3</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Perception -->
+  <div class="panel">
+    <div class="panel-head">Perception</div>
+    <div class="panel-body">
+      <div class="row">
+        <button class="secondary" onclick="robotSnapshot()" disabled>Snapshot</button>
+        <button class="secondary" onclick="robotDescribe()" disabled>Describe Scene</button>
+      </div>
+      <div id="robot-camera" style="margin-top:8px;min-height:120px;background:var(--bg3);border-radius:4px;display:flex;align-items:center;justify-content:center">
+        <span class="empty">No camera feed</span>
+      </div>
+      <div id="robot-scene-desc" style="margin-top:8px;font-size:12px;color:var(--fg2)"></div>
+    </div>
+  </div>
+
+  <!-- Robot Audio -->
+  <div class="panel">
+    <div class="panel-head">Robot Audio</div>
+    <div class="panel-body">
+      <label style="font-size:12px;color:var(--fg2)">Speak text:</label>
+      <div class="row" style="margin-top:4px">
+        <input id="robot-speak-text" placeholder="Text to speak on robot..." style="flex:1">
+        <button onclick="robotSpeak()" disabled>Speak</button>
+      </div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Last heard:</label>
+      <div id="robot-last-heard" class="empty">--</div>
+    </div>
+  </div>
+
+  <!-- Sensor Readout -->
+  <div class="panel">
+    <div class="panel-head">Sensor Readout</div>
+    <div class="panel-body">
+      <table class="config-table">
+        <tr><td>IMU Roll</td><td id="robot-imu-roll">--</td></tr>
+        <tr><td>IMU Pitch</td><td id="robot-imu-pitch">--</td></tr>
+        <tr><td>IMU Yaw</td><td id="robot-imu-yaw">--</td></tr>
+        <tr><td>Left Gripper</td><td id="robot-gripper-l">--</td></tr>
+        <tr><td>Right Gripper</td><td id="robot-gripper-r">--</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Robot Settings -->
+  <div class="panel">
+    <div class="panel-head">Robot Settings</div>
+    <div class="panel-body" style="max-height:none">
+      <label style="font-size:12px;color:var(--fg2)">Model:</label>
+      <select id="robot-model-select" onchange="updateRobotModel(this.value)">
+        <option value="unitree_g1">Unitree G1</option>
+      </select>
+      <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">Transport:</label>
+      <select id="robot-transport-select" disabled>
+        <option value="intercom">Intercom P2P</option>
+      </select>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Voice:</label>
+      <select id="robot-voice-select">
+        <option value="am_adam">am_adam</option>
+        <option value="af_heart">af_heart</option>
+      </select>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Safety:</label>
+      <div class="row" style="margin-top:4px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="robot-safety-stop" checked disabled>
+          Safety stop on disconnect
+        </label>
+      </div>
+      <div class="row">
+        <label style="font-size:12px;color:var(--fg2)">Max speed:</label>
+        <input type="range" id="robot-max-speed" min="0.1" max="1.5" step="0.1" value="0.5" style="flex:1">
+        <span id="robot-max-speed-val" style="font-size:12px;width:40px">0.5</span>
+      </div>
+      <hr style="border-color:var(--border);margin:12px 0">
+      <div id="robot-model-settings">
+        <label style="font-size:12px;color:var(--fg2)">G1-Specific:</label>
+        <table class="config-table" style="margin-top:4px">
+          <tr><td>Jetson IP</td><td><input id="robot-jetson-ip" value="192.168.123.164" style="width:auto"></td></tr>
+          <tr><td>DDS Domain</td><td><input id="robot-dds-domain" type="number" value="0" style="width:60px"></td></tr>
+          <tr><td>Hand Control</td><td><input type="checkbox" id="robot-hands" checked></td></tr>
+        </table>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="saveRobotConfig()">Save Robot Config</button>
+      </div>
+      <div id="robot-config-feedback" style="font-size:11px;margin-top:4px"></div>
+    </div>
+  </div>
+</div>
 </div>
 
 <!-- Session Detail Modal -->
@@ -1028,6 +1206,57 @@ async function applyLlmConfig() {
   }
 }
 
+// --- View Switching ---
+let currentView = 'phone';
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('[data-view]').forEach(el => {
+    el.style.display = el.dataset.view === view ? '' : 'none';
+  });
+  document.querySelectorAll('.view-tabs .tab').forEach(tab => {
+    tab.classList.toggle('active', tab.textContent.toLowerCase() === view);
+  });
+}
+
+// Robot placeholder functions
+function submitRobotTask() {}
+function robotCmd() {}
+function robotSnapshot() {}
+function robotDescribe() {}
+function robotSpeak() {}
+function updateRobotModel() {}
+function saveRobotConfig() {
+  fetch('/api/config/robot', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      voice: document.getElementById('robot-voice-select').value,
+    })
+  }).then(r => r.json()).then(d => {
+    document.getElementById('robot-config-feedback').textContent = d.ok ? 'Saved.' : 'Error.';
+  });
+}
+
+// Load robot config on page load
+function loadRobotConfig() {
+  fetch('/api/config/robot').then(r => r.json()).then(d => {
+    document.getElementById('robot-model').textContent = d.model || '--';
+    document.getElementById('robot-transport').textContent = d.transport || '--';
+    document.getElementById('robot-status').textContent = d.connected ? 'Connected' : 'Not connected';
+    if (d.connected) {
+      document.getElementById('robot-conn-badge').textContent = 'Connected';
+      document.getElementById('robot-conn-badge').style.background = 'rgba(63,185,80,0.2)';
+      document.getElementById('robot-conn-badge').style.color = 'var(--green)';
+    }
+  }).catch(() => {});
+}
+
+// Speed slider update
+document.getElementById('robot-speed')?.addEventListener('input', function() {
+  document.getElementById('robot-speed-val').textContent = this.value;
+});
+document.getElementById('robot-max-speed')?.addEventListener('input', function() {
+  document.getElementById('robot-max-speed-val').textContent = this.value;
+});
+
 // --- Init ---
 connectWS();
 loadStatus();
@@ -1036,6 +1265,7 @@ loadInstructions();
 loadCallConfig();
 loadTtsConfig();
 loadLlmConfig();
+loadRobotConfig();
 setInterval(loadStatus, 30000);
 </script>
 </body>

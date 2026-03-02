@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import re
 import tempfile
 import time
-import uuid
 from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -22,16 +20,23 @@ import llm_backend
 import session_store
 import voice_pipeline
 from event_bus import bus
+from endpoints.phone import adb as phone_adb
+from endpoints.phone import routes as phone_routes_mod
+from endpoints.phone.routes import (
+    router as phone_router,
+    call_config_response as _call_config_response,
+    AGENT_ALLOWED_CALL_KEYS,
+    _CALL_BODY_REMAP,
+)
 
 app = FastAPI(title="Local Voice Gateway", version="0.1.0")
+app.include_router(phone_router)
 
 _ROOT = Path(__file__).resolve().parent
 _TMP_DIR = _ROOT / "tmp"
 _TMP_DIR.mkdir(parents=True, exist_ok=True)
 _STATIC_DIR = _ROOT / "static"
 _START_TIME = time.time()
-_CALL_COUNT = 0
-_ERROR_COUNT = 0
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +53,7 @@ def _check_bearer(request: Request) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phone API endpoints
+# Generic API endpoints
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
@@ -114,329 +119,6 @@ async def session_end(request: Request) -> JSONResponse:
     return JSONResponse({"ok": ok, "session_id": sid})
 
 
-@app.post("/api/turn")
-async def api_turn(
-    request: Request,
-    audio: UploadFile = File(...),
-    session_id: str = Form(""),
-    reset_session: str = Form("false"),
-    transcript_hint: str = Form(""),
-    skip_asr: str = Form(""),
-    forced_reply: str = Form(""),
-    caller_number: str = Form(""),
-    call_direction: str = Form(""),
-) -> JSONResponse:
-    global _CALL_COUNT, _ERROR_COUNT
-    _check_bearer(request)
-
-    sid = voice_pipeline.safe_text(session_id) or uuid.uuid4().hex
-
-    # Reject turns for ended sessions (e.g. after forced hangup)
-    if sid and session_store.is_ended(sid):
-        return JSONResponse({"ok": False, "session_id": sid, "ended": True, "detail": "session ended"})
-
-    sid = session_store.get_or_create(sid)
-
-    if reset_session.lower() == "true":
-        session_store.reset(sid)
-        sid = session_store.get_or_create(sid)
-
-    # Snapshot generation — if it changes mid-turn, this turn is stale
-    turn_gen = session_store.get_generation(sid)
-
-    cfg = config.load()
-
-    # --- Caller info ---
-    caller_number_clean = voice_pipeline.safe_text(caller_number)
-    call_direction_clean = voice_pipeline.safe_text(call_direction)
-    if caller_number_clean:
-        session_store.set_caller_info(sid, caller_number_clean, call_direction_clean)
-
-    # --- Caller history persistence ---
-    if reset_session.lower() == "true" and caller_number_clean:
-        normalized_caller = re.sub(r"[\s\-\(\)]", "", caller_number_clean)
-        if normalized_caller:
-            if cfg.get("keep_history", False):
-                prev = session_store.load_caller_history(normalized_caller)
-                if prev:
-                    for msg in prev.get("history", []):
-                        session_store.get_history(sid)  # ensure list exists
-                        session_store._HISTORY.setdefault(sid, []).append(msg)
-                    prev_summary = prev.get("summary", "")
-                    if prev_summary:
-                        session_store._SUMMARY[sid] = prev_summary
-            else:
-                session_store.delete_caller_history(normalized_caller)
-
-    # --- Caller filtering ---
-    normalized = re.sub(r"[\s\-\(\)]", "", caller_number_clean)
-    blocklist = cfg.get("caller_blocklist", [])
-    if normalized and normalized in blocklist:
-        await bus.publish("turn.caller_rejected", {"number": normalized, "reason": "blocklisted"}, session_id=sid)
-        reject_text = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
-        audio_bytes, _ = await asyncio.to_thread(voice_pipeline.synthesize, reject_text)
-        return JSONResponse({
-            "ok": False, "rejected": True, "reason": "blocklisted",
-            "session_id": sid, "reply": reject_text,
-            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-        })
-
-    allowlist = cfg.get("caller_allowlist", [])
-    if allowlist and normalized and normalized not in allowlist:
-        await bus.publish("turn.caller_rejected", {"number": normalized, "reason": "not_allowlisted"}, session_id=sid)
-        reject_text = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
-        audio_bytes, _ = await asyncio.to_thread(voice_pipeline.synthesize, reject_text)
-        return JSONResponse({
-            "ok": False, "rejected": True, "reason": "not_allowlisted",
-            "session_id": sid, "reply": reject_text,
-            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-        })
-
-    if not normalized and not cfg.get("unknown_callers_allowed", True):
-        await bus.publish("turn.caller_rejected", {"number": "", "reason": "unknown_caller"}, session_id=sid)
-        reject_text = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
-        audio_bytes, _ = await asyncio.to_thread(voice_pipeline.synthesize, reject_text)
-        return JSONResponse({
-            "ok": False, "rejected": True, "reason": "unknown_caller",
-            "session_id": sid, "reply": reject_text,
-            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-        })
-
-    # Touch session activity + sweep stale sessions
-    session_store.touch(sid)
-    stale = session_store.sweep_stale()
-    for stale_sid in stale:
-        await bus.publish("session.ended", {"session_id": stale_sid, "reason": "stale"}, session_id=stale_sid)
-
-    # --- Pending TTS inject? Return it immediately, skip ASR/LLM ---
-    pending = session_store.drain_inject(sid)
-    if pending:
-        await bus.publish("turn.started", {"session_id": sid}, session_id=sid)
-        await bus.publish("turn.reply", {"reply": pending["text"]}, session_id=sid)
-        await bus.publish("turn.complete", {
-            "metrics": {"asr_ms": 0, "llm_ms": 0, "tts_ms": 0, "total_ms": 0},
-            "transcript": "", "reply": pending["text"], "model": "inject",
-        }, session_id=sid)
-        return JSONResponse({
-            "ok": True, "session_id": sid, "transcript": "",
-            "reply": pending["text"], "audio_base64": pending["audio_base64"],
-            "asr_ms": 0, "llm_ms": 0, "tts_ms": 0, "total_ms": 0,
-            "model": "inject",
-        })
-
-    start = time.perf_counter()
-    _CALL_COUNT += 1
-
-    await bus.publish("turn.started", {"session_id": sid}, session_id=sid)
-
-    transcript = ""
-    reply = ""
-    asr_ms = 0.0
-    llm_ms = 0.0
-    tts_ms = 0.0
-    llm_model = ""
-
-    try:
-        # --- forced_reply: skip ASR + LLM, go straight to TTS ---
-        forced = voice_pipeline.safe_text(forced_reply)
-        if forced:
-            transcript = ""
-            reply = forced
-            asr_ms = 0.0
-            llm_ms = 0.0
-        else:
-            # --- ASR ---
-            skip = skip_asr.strip().lower() == "true"
-            hint = voice_pipeline.safe_text(transcript_hint)
-
-            if skip and hint:
-                transcript = hint
-                asr_ms = 0.0
-            else:
-                suffix = Path(audio.filename or "turn.wav").suffix or ".wav"
-                with tempfile.NamedTemporaryFile(dir=_TMP_DIR, suffix=suffix, delete=False) as tmp:
-                    tmp_path = Path(tmp.name)
-                    tmp.write(await audio.read())
-                try:
-                    transcript, asr_ms = await asyncio.to_thread(voice_pipeline.transcribe, tmp_path)
-                except Exception as exc:
-                    _ERROR_COUNT += 1
-                    raise HTTPException(status_code=400, detail=f"ASR failed: {exc}") from exc
-                finally:
-                    tmp_path.unlink(missing_ok=True)
-
-                # Fallback to hint
-                if not transcript and hint:
-                    transcript = hint
-
-            await bus.publish("turn.transcript", {"transcript": transcript}, session_id=sid)
-
-            # --- Passphrase auth gate ---
-            passphrase = cfg.get("auth_passphrase", "")
-            if passphrase and transcript and not session_store.is_authenticated(sid):
-                # Fuzzy match: case-insensitive, strip punctuation, substring
-                clean_phrase = re.sub(r"[^\w\s]", "", passphrase.lower()).strip()
-                clean_input = re.sub(r"[^\w\s]", "", transcript.lower()).strip()
-                if clean_phrase in clean_input:
-                    session_store.mark_authenticated(sid)
-                    reply = "Authentication successful. How can I help you?"
-                    llm_ms = 0.0
-                    await bus.publish("turn.authenticated", {"session_id": sid}, session_id=sid)
-                else:
-                    attempts = session_store.record_auth_attempt(sid)
-                    max_attempts = cfg.get("auth_max_attempts", 3)
-                    await bus.publish("turn.auth_failed", {"session_id": sid, "attempt": attempts}, session_id=sid)
-                    if max_attempts > 0 and attempts >= max_attempts:
-                        reply = cfg.get("auth_reject_message", "I'm sorry, I can't help you right now. Goodbye.")
-                        llm_ms = 0.0
-                        # Skip LLM, go to TTS, include hangup
-                        await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
-                        audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, reply)
-                        total_ms = (time.perf_counter() - start) * 1000
-                        metrics = {"asr_ms": round(asr_ms, 1), "llm_ms": 0.0, "tts_ms": round(tts_ms, 1),
-                                   "total_ms": round(total_ms, 1), "llm_model": ""}
-                        session_store.record_turn(sid, {"transcript": transcript, "reply": reply,
-                                                        "metrics": metrics, "forced_reply": False})
-                        session_store.save_session(sid)
-                        await bus.publish("turn.complete", {"metrics": metrics, "transcript": transcript,
-                                                            "reply": reply, "session_id": sid}, session_id=sid)
-                        return JSONResponse({
-                            "ok": True, "session_id": sid, "transcript": transcript, "reply": reply,
-                            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-                            "metrics": metrics, "hangup": True,
-                        })
-                    else:
-                        reply = "That's not correct. Please try again."
-                        llm_ms = 0.0
-
-                # Auth handled — skip LLM, go to TTS
-                await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
-                audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, reply)
-                total_ms = (time.perf_counter() - start) * 1000
-                metrics = {"asr_ms": round(asr_ms, 1), "llm_ms": 0.0, "tts_ms": round(tts_ms, 1),
-                           "total_ms": round(total_ms, 1), "llm_model": ""}
-                session_store.record_turn(sid, {"transcript": transcript, "reply": reply,
-                                                "metrics": metrics, "forced_reply": False})
-                session_store.save_session(sid)
-                await bus.publish("turn.complete", {"metrics": metrics, "transcript": transcript,
-                                                    "reply": reply, "session_id": sid}, session_id=sid)
-                return JSONResponse({
-                    "ok": True, "session_id": sid, "transcript": transcript, "reply": reply,
-                    "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-                    "metrics": metrics,
-                })
-
-            # --- LLM ---
-            if not transcript:
-                transcript = ""
-                reply = "I could not hear that clearly. Please try again."
-                llm_ms = 0.0
-            else:
-                # Check if agent has taken over LLM for this session
-                agent_ws = agent_interface.get_takeover_agent(sid)
-                if agent_ws is not None:
-                    # Route to agent via single-reader pattern (request_id correlation)
-                    takeover_timeout = config.get("agent_takeover_timeout", 60)
-                    reply_text = await agent_interface.send_turn_request(
-                        agent_ws, sid, transcript, timeout=takeover_timeout,
-                    )
-                    if reply_text is not None:
-                        reply = voice_pipeline.safe_text(reply_text)
-                        llm_ms = 0.0
-                        llm_model = "agent"
-                    else:
-                        # Agent failed / timed out — fall back to local LLM
-                        agent_ws = None
-
-                if agent_ws is None and not reply:
-                    async with session_store.get_lock(sid):
-                        # 1. Master instructions (never compacted)
-                        system_prompt = instruction_store.build_system_prompt(sid)
-
-                        # 2. Agent injected knowledge — merged into system prompt for maximum weight
-                        knowledge = instruction_store.get_agent_knowledge(sid)
-                        if knowledge:
-                            system_prompt += f"\n\nIMPORTANT — use the following facts when answering:\n{knowledge}"
-
-                        messages = [{"role": "system", "content": system_prompt}]
-
-                        # 3. Compacted summary of older conversation (if any)
-                        summary = session_store.get_summary(sid)
-                        if summary:
-                            messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
-
-                        # 4. Recent history (verbatim)
-                        history = session_store.get_history(sid)
-                        messages.extend(history)
-
-                        # 5. Current user turn
-                        messages.append({"role": "user", "content": transcript})
-
-                        reply, llm_ms, llm_model = await asyncio.to_thread(llm_backend.generate, messages)
-
-                # Commit to history + compact once (after both messages)
-                session_store.append(sid, "user", transcript)
-                session_store.append(sid, "assistant", reply)
-                session_store.compact(sid)
-
-        await bus.publish("turn.reply", {"reply": reply}, session_id=sid)
-
-        # --- Stale turn check: abort if session was reset while we were processing ---
-        if session_store.get_generation(sid) != turn_gen:
-            await bus.publish("turn.stale", {"session_id": sid, "reason": "generation_changed"}, session_id=sid)
-            return JSONResponse({"ok": False, "session_id": sid, "stale": True, "detail": "session reset during turn"})
-
-        # --- TTS ---
-        audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, reply)
-
-        # Check again after TTS (synthesis can be slow)
-        if session_store.get_generation(sid) != turn_gen:
-            await bus.publish("turn.stale", {"session_id": sid, "reason": "generation_changed"}, session_id=sid)
-            return JSONResponse({"ok": False, "session_id": sid, "stale": True, "detail": "session reset during turn"})
-
-        total_ms = (time.perf_counter() - start) * 1000
-
-        metrics = {
-            "asr_ms": round(asr_ms, 1),
-            "llm_ms": round(llm_ms, 1),
-            "tts_ms": round(tts_ms, 1),
-            "total_ms": round(total_ms, 1),
-            "llm_model": llm_model,
-        }
-
-        # Record turn for session persistence
-        session_store.record_turn(sid, {
-            "transcript": transcript,
-            "reply": reply,
-            "metrics": metrics,
-            "forced_reply": bool(forced),
-        })
-        session_store.save_session(sid)
-
-        await bus.publish("turn.complete", {
-            "metrics": metrics,
-            "transcript": transcript,
-            "reply": reply,
-            "session_id": sid,
-        }, session_id=sid)
-
-        return JSONResponse({
-            "ok": True,
-            "session_id": sid,
-            "transcript": transcript,
-            "reply": reply,
-            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
-            "metrics": metrics,
-        })
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _ERROR_COUNT += 1
-        await bus.publish("turn.error", {"error": str(exc)}, session_id=sid)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
 # ---------------------------------------------------------------------------
 # UI support endpoints
 # ---------------------------------------------------------------------------
@@ -457,17 +139,26 @@ async def get_session(session_id: str) -> JSONResponse:
 @app.get("/api/status")
 async def system_status() -> JSONResponse:
     cfg = config.load()
+    # Filter out sensitive keys from config for display
+    safe_cfg = {}
+    for k, v in cfg.items():
+        if "token" in k or "key" in k or "bearer" in k:
+            continue
+        if isinstance(v, dict):
+            safe_cfg[k] = {sk: sv for sk, sv in v.items() if "token" not in sk and "key" not in sk}
+        else:
+            safe_cfg[k] = v
     return JSONResponse({
         "uptime_s": round(time.time() - _START_TIME),
-        "total_calls": _CALL_COUNT,
-        "error_count": _ERROR_COUNT,
+        "total_calls": phone_routes_mod._CALL_COUNT,
+        "error_count": phone_routes_mod._ERROR_COUNT,
         "active_sessions": len(session_store.active_sessions()),
         "ended_sessions": len(session_store.ended_sessions()),
         "ui_subscribers": bus.subscriber_count,
         "agents": agent_interface.list_agents(),
         "mlx_audio": voice_pipeline.check_mlx_audio(),
         "llm": llm_backend.check_health(),
-        "config": {k: v for k, v in cfg.items() if "token" not in k and "key" not in k and "bearer" not in k},
+        "config": safe_cfg,
     })
 
 
@@ -476,32 +167,15 @@ async def update_config(request: Request) -> JSONResponse:
     """Hot-reload config from disk."""
     cfg = config.reload()
     await bus.publish("status.update", {"event": "config_reloaded"})
-    safe = {k: v for k, v in cfg.items() if "token" not in k and "key" not in k and "bearer" not in k}
-    return JSONResponse({"ok": True, "config": safe})
-
-
-@app.post("/api/call/inject")
-async def call_inject(request: Request) -> JSONResponse:
-    """Inject a TTS message into the active call. Queued for next /api/turn poll."""
-    body = await request.json()
-    text = voice_pipeline.safe_text(str(body.get("text", "")))
-    session_id = str(body.get("session_id", ""))
-    if not text:
-        raise HTTPException(status_code=400, detail="text required")
-    # If no session specified, pick most recently active session
-    if not session_id:
-        session_id = session_store.most_recent_active_session() or ""
-    if not session_id:
-        raise HTTPException(status_code=400, detail="no active session")
-    audio_bytes, tts_ms = await asyncio.to_thread(voice_pipeline.synthesize, text)
-    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-    session_store.queue_inject(session_id, text, audio_b64)
-    await bus.publish("agent.inject", {
-        "text": text,
-        "audio_base64": audio_b64,
-        "tts_ms": round(tts_ms, 1),
-    }, session_id=session_id)
-    return JSONResponse({"ok": True, "tts_ms": round(tts_ms, 1), "session_id": session_id})
+    safe_cfg = {}
+    for k, v in cfg.items():
+        if "token" in k or "key" in k or "bearer" in k:
+            continue
+        if isinstance(v, dict):
+            safe_cfg[k] = {sk: sv for sk, sv in v.items() if "token" not in sk and "key" not in sk}
+        else:
+            safe_cfg[k] = v
+    return JSONResponse({"ok": True, "config": safe_cfg})
 
 
 # ---------------------------------------------------------------------------
@@ -519,8 +193,7 @@ async def set_base_instruction(request: Request) -> JSONResponse:
     sessions without a session-scoped override) will use this prompt."""
     body = await request.json()
     text = str(body.get("text", ""))
-    cfg = config.load()
-    cfg["llm_system_prompt"] = text
+    config.set("llm.system_prompt", text)
     config.save()
     await bus.publish("instructions.updated", {"scope": "global"})
     return JSONResponse({"ok": True, "scope": "global"})
@@ -548,109 +221,6 @@ async def clear_session_instruction(sid: str) -> JSONResponse:
     instruction_store.clear_session(sid)
     await bus.publish("instructions.updated", {"scope": "session", "session_id": sid}, session_id=sid)
     return JSONResponse({"ok": True, "session_id": sid})
-
-
-# ---------------------------------------------------------------------------
-# Dial endpoint
-# ---------------------------------------------------------------------------
-
-async def _do_dial(number: str) -> dict:
-    """Send dial command to phone via ADB broadcast."""
-    if not number:
-        return {"ok": False, "detail": "number required"}
-    adb = config.get("adb_path", "adb")
-    # Check ADB connection
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            adb, "devices",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        lines = stdout.decode().strip().split("\n")
-        devices = [l for l in lines[1:] if l.strip() and "device" in l]
-        if not devices:
-            return {"ok": False, "detail": "No ADB device connected"}
-    except Exception as exc:
-        return {"ok": False, "detail": f"ADB check failed: {exc}"}
-    # Send broadcast
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            adb, "shell", "am", "broadcast",
-            "-a", "com.tracsystems.phonebridge.CALL_COMMAND",
-            "-n", "com.tracsystems.phonebridge/.CallCommandReceiver",
-            "--es", "type", "dial",
-            "--es", "number", number,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        output = stdout.decode().strip()
-        if proc.returncode != 0:
-            return {"ok": False, "detail": f"ADB broadcast failed: {stderr.decode().strip()}"}
-        return {"ok": True, "detail": output}
-    except Exception as exc:
-        return {"ok": False, "detail": f"Dial failed: {exc}"}
-
-
-@app.post("/api/call/dial")
-async def call_dial(request: Request) -> JSONResponse:
-    body = await request.json()
-    number = str(body.get("number", "")).strip()
-    result = await _do_dial(number)
-    if result["ok"]:
-        await bus.publish("call.dial", {"number": number})
-    return JSONResponse(result)
-
-
-async def _do_hangup() -> dict:
-    """Send hangup command to phone via ADB broadcast."""
-    adb = config.get("adb_path", "adb")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            adb, "devices",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        lines = stdout.decode().strip().split("\n")
-        devices = [l for l in lines[1:] if l.strip() and "device" in l]
-        if not devices:
-            return {"ok": False, "detail": "No ADB device connected"}
-    except Exception as exc:
-        return {"ok": False, "detail": f"ADB check failed: {exc}"}
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            adb, "shell", "am", "broadcast",
-            "-a", "com.tracsystems.phonebridge.CALL_COMMAND",
-            "-n", "com.tracsystems.phonebridge/.CallCommandReceiver",
-            "--es", "type", "hangup",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode != 0:
-            return {"ok": False, "detail": f"ADB broadcast failed: {stderr.decode().strip()}"}
-        return {"ok": True, "detail": stdout.decode().strip()}
-    except Exception as exc:
-        return {"ok": False, "detail": f"Hangup failed: {exc}"}
-
-
-def _single_active_session() -> str:
-    """Return the one active session ID if exactly one exists, else empty string."""
-    active = session_store.active_sessions()
-    return next(iter(active)) if len(active) == 1 else ""
-
-
-@app.post("/api/call/hangup")
-async def call_hangup(request: Request) -> JSONResponse:
-    body = await request.json() if await request.body() else {}
-    session_id = str(body.get("session_id", "")).strip()
-    result = await _do_hangup()
-    if result["ok"]:
-        sid = session_id or _single_active_session()
-        if sid:
-            session_store.end_session(sid)
-            await bus.publish("session.ended", {"session_id": sid}, session_id=sid)
-            result["session_id"] = sid
-        await bus.publish("call.hangup", result)
-    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -725,26 +295,30 @@ async def agent_ws(ws: WebSocket) -> None:
                                         "error": "Missing session_id for session/turn scope."})
 
             elif msg_type == "set_call_config":
-                cfg = config.load()
                 for key, value in msg.get("config", {}).items():
-                    if key in AGENT_ALLOWED_CALL_KEYS:
-                        cfg[key] = value
+                    cfg_key = _CALL_BODY_REMAP.get(key, key)
+                    if cfg_key in AGENT_ALLOWED_CALL_KEYS:
+                        # Handle TTS keys separately
+                        if cfg_key.startswith("tts."):
+                            config.set(cfg_key, value)
+                        else:
+                            config.set(f"phone.{cfg_key}", value)
                 config.save()
                 await ws.send_json({"type": "set_call_config.ack", "ok": True})
                 await bus.publish("config.call_updated", _call_config_response())
 
             elif msg_type == "dial":
                 number = str(msg.get("number", ""))
-                result = await _do_dial(number)
+                result = await phone_adb.do_dial(number)
                 await ws.send_json({"type": "dial.ack", **result})
                 if result["ok"]:
                     await bus.publish("call.dial", {"number": number})
 
             elif msg_type == "hangup":
                 sid = str(msg.get("session_id", ""))
-                result = await _do_hangup()
+                result = await phone_adb.do_hangup()
                 if result["ok"]:
-                    target = sid or _single_active_session()
+                    target = sid or phone_adb.single_active_session()
                     if target:
                         session_store.end_session(target)
                         await bus.publish("session.ended", {"session_id": target}, session_id=target)
@@ -923,31 +497,43 @@ _PIPER_EMOTIONS = {
     "neutral": 4, "sleepy": 5, "surprised": 6, "whisper": 7,
 }
 
-_TTS_ALIAS = {"voice": "tts_voice", "speed": "tts_speed", "lang": "tts_lang"}
+_TTS_ALIAS = {"voice": "tts.voice", "speed": "tts.speed", "lang": "tts.lang"}
 
 _TTS_WRITABLE_KEYS = {
-    "tts_voice", "tts_speed", "tts_lang",
-    "piper_voice", "piper_speaker", "piper_length_scale",
-    "piper_noise_scale", "piper_noise_w", "piper_sentence_silence",
+    "tts.voice", "tts.speed", "tts.lang",
+    "tts.piper.voice", "tts.piper.speaker", "tts.piper.length_scale",
+    "tts.piper.noise_scale", "tts.piper.noise_w", "tts.piper.sentence_silence",
+}
+
+# Aliases for TTS POST body keys → dotted config paths
+_TTS_BODY_TO_PATH = {
+    "voice": "tts.voice", "speed": "tts.speed", "lang": "tts.lang",
+    "tts_voice": "tts.voice", "tts_speed": "tts.speed", "tts_lang": "tts.lang",
+    "piper_voice": "tts.piper.voice", "piper_speaker": "tts.piper.speaker",
+    "piper_length_scale": "tts.piper.length_scale",
+    "piper_noise_scale": "tts.piper.noise_scale",
+    "piper_noise_w": "tts.piper.noise_w",
+    "piper_sentence_silence": "tts.piper.sentence_silence",
 }
 
 
 def _tts_config_response() -> dict:
-    cfg = config.load()
-    lang = cfg.get("tts_lang", "en")
-    resp = {"lang": lang, "model": cfg.get("tts_model", "")}
+    tts = config.section("tts")
+    piper = tts.get("piper", {})
+    lang = tts.get("lang", "en")
+    resp = {"lang": lang, "model": tts.get("model", "")}
     if lang == "de":
-        resp["piper_voice"] = cfg.get("piper_voice", "thorsten-high")
-        resp["piper_speaker"] = cfg.get("piper_speaker", 0)
-        resp["piper_length_scale"] = cfg.get("piper_length_scale", 1.0)
-        resp["piper_noise_scale"] = cfg.get("piper_noise_scale", 0.667)
-        resp["piper_noise_w"] = cfg.get("piper_noise_w", 0.8)
-        resp["piper_sentence_silence"] = cfg.get("piper_sentence_silence", 0.2)
+        resp["piper_voice"] = piper.get("voice", "thorsten-high")
+        resp["piper_speaker"] = piper.get("speaker", 0)
+        resp["piper_length_scale"] = piper.get("length_scale", 1.0)
+        resp["piper_noise_scale"] = piper.get("noise_scale", 0.667)
+        resp["piper_noise_w"] = piper.get("noise_w", 0.8)
+        resp["piper_sentence_silence"] = piper.get("sentence_silence", 0.2)
         resp["voices"] = _PIPER_VOICES
         resp["emotions"] = _PIPER_EMOTIONS
     else:
-        resp["voice"] = cfg.get("tts_voice", "am_adam")
-        resp["speed"] = cfg.get("tts_speed", 1.2)
+        resp["voice"] = tts.get("voice", "am_adam")
+        resp["speed"] = tts.get("speed", 1.2)
         is_kokoro = "kokoro" in resp["model"].lower()
         resp["voices"] = _KOKORO_VOICES if is_kokoro else {}
     return resp
@@ -961,12 +547,10 @@ async def get_tts_config() -> JSONResponse:
 @app.post("/api/config/tts")
 async def update_tts_config(request: Request) -> JSONResponse:
     body = await request.json()
-    cfg = config.load()
     # If switching to German, verify Piper is reachable first
-    lang_key = _TTS_ALIAS.get("lang", "tts_lang")
     new_lang = body.get("lang") or body.get("tts_lang")
-    if new_lang == "de" and cfg.get("tts_lang", "en") != "de":
-        piper_base = cfg.get("piper_base", "http://127.0.0.1:5123")
+    if new_lang == "de" and config.get("tts.lang", "en") != "de":
+        piper_base = config.get("tts.piper.base", "http://127.0.0.1:5123")
         try:
             probe = httpx.post(piper_base, json={"text": "test"}, timeout=5)
             if probe.status_code != 200:
@@ -977,9 +561,9 @@ async def update_tts_config(request: Request) -> JSONResponse:
                 status_code=400,
             )
     for body_key, value in body.items():
-        cfg_key = _TTS_ALIAS.get(body_key, body_key)
-        if cfg_key in _TTS_WRITABLE_KEYS:
-            cfg[cfg_key] = value
+        cfg_path = _TTS_BODY_TO_PATH.get(body_key)
+        if cfg_path and cfg_path in _TTS_WRITABLE_KEYS:
+            config.set(cfg_path, value)
     config.save()
     resp = _tts_config_response()
     await bus.publish("config.tts_updated", resp)
@@ -989,8 +573,9 @@ async def update_tts_config(request: Request) -> JSONResponse:
 @app.post("/api/tts/preview")
 async def tts_preview(request: Request) -> JSONResponse:
     body = await request.json()
-    cfg = config.load()
-    lang = cfg.get("tts_lang", "en")
+    tts = config.section("tts")
+    asr = config.section("asr")
+    lang = tts.get("lang", "en")
 
     if lang == "de":
         text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hallo, das ist eine Sprachvorschau."
@@ -1001,16 +586,16 @@ async def tts_preview(request: Request) -> JSONResponse:
             "ok": True,
             "audio_base64": audio_b64,
             "lang": "de",
-            "piper_voice": cfg.get("piper_voice", "thorsten-high"),
+            "piper_voice": tts.get("piper", {}).get("voice", "thorsten-high"),
         })
     else:
         text = voice_pipeline.safe_text(str(body.get("text", ""))) or "Hello, this is a voice preview."
-        preview_voice = str(body.get("voice", "")) or config.get("tts_voice", "am_adam")
-        preview_speed = float(body.get("speed", 0)) or config.get("tts_speed", 1.2)
+        preview_voice = str(body.get("voice", "")) or tts.get("voice", "am_adam")
+        preview_speed = float(body.get("speed", 0)) or tts.get("speed", 1.2)
 
-        mlx_base = cfg["mlx_audio_base"].rstrip("/")
+        mlx_base = asr["backend"].rstrip("/")
         payload = {
-            "model": cfg["tts_model"],
+            "model": tts["model"],
             "input": voice_pipeline.trim_for_tts(text),
             "voice": preview_voice,
             "speed": preview_speed,
@@ -1035,50 +620,50 @@ async def tts_preview(request: Request) -> JSONResponse:
 # LLM config endpoints
 # ---------------------------------------------------------------------------
 
-_LLM_PARAM_KEYS = {
-    "llm_max_tokens", "llm_temperature", "llm_top_p", "llm_top_k",
-    "llm_repeat_penalty", "llm_stop",
-    "llm_top_p_enabled", "llm_top_k_enabled", "llm_context_tokens",
-    "max_history_turns",
+_LLM_WRITABLE_KEYS = {
+    "llm.max_tokens", "llm.temperature", "llm.top_p", "llm.top_k",
+    "llm.repeat_penalty", "llm.stop",
+    "llm.top_p_enabled", "llm.top_k_enabled", "llm.context_tokens",
+    "llm.max_history_turns",
+    "llm.model", "llm.base_url", "llm.api_key",
 }
-_LLM_IDENTITY_KEYS = {"llm_model", "llm_base_url", "llm_api_key"}
 
-# Short aliases accepted by POST body → config key
-_LLM_ALIAS = {
-    "model": "llm_model",
-    "base_url": "llm_base_url",
-    "api_key": "llm_api_key",
-    "max_tokens": "llm_max_tokens",
-    "temperature": "llm_temperature",
-    "top_p": "llm_top_p",
-    "top_k": "llm_top_k",
-    "top_p_enabled": "llm_top_p_enabled",
-    "top_k_enabled": "llm_top_k_enabled",
-    "repeat_penalty": "llm_repeat_penalty",
-    "stop": "llm_stop",
-    "context_tokens": "llm_context_tokens",
-    "max_history_turns": "max_history_turns",
+# Short aliases accepted by POST body → dotted config path
+_LLM_BODY_TO_PATH = {
+    "model": "llm.model",
+    "base_url": "llm.base_url",
+    "api_key": "llm.api_key",
+    "max_tokens": "llm.max_tokens",
+    "temperature": "llm.temperature",
+    "top_p": "llm.top_p",
+    "top_k": "llm.top_k",
+    "top_p_enabled": "llm.top_p_enabled",
+    "top_k_enabled": "llm.top_k_enabled",
+    "repeat_penalty": "llm.repeat_penalty",
+    "stop": "llm.stop",
+    "context_tokens": "llm.context_tokens",
+    "max_history_turns": "llm.max_history_turns",
 }
 
 
 def _llm_config_response() -> dict:
-    cfg = config.load()
+    llm = config.section("llm")
     return {
-        "model": cfg.get("llm_model", ""),
-        "base_url": cfg.get("llm_base_url", ""),
-        "has_api_key": bool(cfg.get("llm_api_key", "")),
-        "max_tokens": cfg.get("llm_max_tokens", 400),
-        "context_tokens": cfg.get("llm_context_tokens", 0),
-        "context_tokens_effective": cfg.get("llm_context_tokens", 0) or llm_backend.get_context_window(),
-        "max_history_turns": cfg.get("max_history_turns", 8),
-        "temperature": cfg.get("llm_temperature", 0.2),
-        "top_p": cfg.get("llm_top_p", 1.0),
-        "top_p_enabled": cfg.get("llm_top_p_enabled", True),
-        "top_k": cfg.get("llm_top_k", 0),
-        "top_k_enabled": cfg.get("llm_top_k_enabled", True),
-        "repeat_penalty": cfg.get("llm_repeat_penalty", 1.0),
-        "stop": cfg.get("llm_stop", []),
-        "is_local": not cfg.get("llm_base_url"),
+        "model": llm.get("model", ""),
+        "base_url": llm.get("base_url", ""),
+        "has_api_key": bool(llm.get("api_key", "")),
+        "max_tokens": llm.get("max_tokens", 400),
+        "context_tokens": llm.get("context_tokens", 0),
+        "context_tokens_effective": llm.get("context_tokens", 0) or llm_backend.get_context_window(),
+        "max_history_turns": llm.get("max_history_turns", 8),
+        "temperature": llm.get("temperature", 0.2),
+        "top_p": llm.get("top_p", 1.0),
+        "top_p_enabled": llm.get("top_p_enabled", True),
+        "top_k": llm.get("top_k", 0),
+        "top_k_enabled": llm.get("top_k_enabled", True),
+        "repeat_penalty": llm.get("repeat_penalty", 1.0),
+        "stop": llm.get("stop", []),
+        "is_local": not llm.get("base_url"),
     }
 
 
@@ -1090,95 +675,15 @@ async def get_llm_config() -> JSONResponse:
 @app.post("/api/config/llm")
 async def update_llm_config(request: Request) -> JSONResponse:
     body = await request.json()
-    cfg = config.load()
 
     for body_key, value in body.items():
-        cfg_key = _LLM_ALIAS.get(body_key, body_key)
-        if cfg_key in _LLM_PARAM_KEYS | _LLM_IDENTITY_KEYS:
-            cfg[cfg_key] = value
+        cfg_path = _LLM_BODY_TO_PATH.get(body_key)
+        if cfg_path and cfg_path in _LLM_WRITABLE_KEYS:
+            config.set(cfg_path, value)
 
     config.save()
     await bus.publish("config.llm_updated", _llm_config_response())
     return JSONResponse({"ok": True, **_llm_config_response()})
-
-
-# ---------------------------------------------------------------------------
-# Call config endpoints
-# ---------------------------------------------------------------------------
-
-_CALL_CONFIG_KEYS = {
-    "call_auto_answer", "call_auto_answer_delay_ms",
-    "caller_allowlist", "caller_blocklist", "unknown_callers_allowed",
-    "greeting_incoming", "greeting_outgoing", "greeting_owner",
-    "max_duration_sec", "max_duration_message",
-    "auth_passphrase", "auth_reject_message", "auth_max_attempts",
-    "keep_history",
-}
-
-# Keys agents are NOT allowed to set via WebSocket
-_CALL_SECURITY_KEYS = {
-    "auth_passphrase", "auth_reject_message", "auth_max_attempts",
-    "caller_allowlist", "caller_blocklist", "unknown_callers_allowed",
-}
-
-AGENT_ALLOWED_CALL_KEYS = (_CALL_CONFIG_KEYS - _CALL_SECURITY_KEYS) | {"tts_voice", "tts_speed"}
-
-
-def _call_config_response() -> dict:
-    cfg = config.load()
-    owner = cfg.get("greeting_owner", "the owner")
-    greeting_in = cfg.get("greeting_incoming", "")
-    greeting_out = cfg.get("greeting_outgoing", "")
-    return {
-        "auto_answer": cfg.get("call_auto_answer", True),
-        "auto_answer_delay_ms": cfg.get("call_auto_answer_delay_ms", 500),
-        "caller_allowlist": cfg.get("caller_allowlist", []),
-        "caller_blocklist": cfg.get("caller_blocklist", []),
-        "unknown_callers_allowed": cfg.get("unknown_callers_allowed", True),
-        "greeting_incoming": greeting_in.replace("{owner}", owner),
-        "greeting_outgoing": greeting_out.replace("{owner}", owner),
-        "greeting_incoming_template": greeting_in,
-        "greeting_outgoing_template": greeting_out,
-        "greeting_owner": owner,
-        "max_duration_sec": cfg.get("max_duration_sec", 300),
-        "max_duration_message": cfg.get("max_duration_message", ""),
-        "auth_required": bool(cfg.get("auth_passphrase", "")),
-        "auth_reject_message": cfg.get("auth_reject_message", ""),
-        "auth_max_attempts": cfg.get("auth_max_attempts", 3),
-        "keep_history": cfg.get("keep_history", False),
-    }
-
-
-@app.get("/api/config/call")
-async def get_call_config() -> JSONResponse:
-    return JSONResponse(_call_config_response())
-
-
-@app.post("/api/config/call")
-async def update_call_config(request: Request) -> JSONResponse:
-    body = await request.json()
-    cfg = config.load()
-    for key, value in body.items():
-        if key in _CALL_CONFIG_KEYS:
-            cfg[key] = value
-    config.save()
-    await bus.publish("config.call_updated", _call_config_response())
-    return JSONResponse({"ok": True, **_call_config_response()})
-
-
-# ---------------------------------------------------------------------------
-# Caller history endpoints
-# ---------------------------------------------------------------------------
-
-@app.get("/api/caller-history")
-async def list_caller_history() -> JSONResponse:
-    return JSONResponse(session_store.list_caller_histories())
-
-
-@app.delete("/api/caller-history/{number}")
-async def delete_caller_history(number: str) -> JSONResponse:
-    ok = session_store.delete_caller_history(number)
-    return JSONResponse({"ok": ok, "number": number})
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +713,66 @@ async def agent_call_state(sid: str) -> JSONResponse:
         "agent_takeover": has_takeover,
         "created_at": resp_meta.get("created_at") if resp_meta else None,
     })
+
+
+# ---------------------------------------------------------------------------
+# Robot config endpoints
+# ---------------------------------------------------------------------------
+
+# Keys agents are NOT allowed to set
+_ROBOT_SECURITY_KEYS = {
+    "intercom_key", "safety_stop_on_disconnect", "enable_low_level",
+}
+
+
+def _robot_config_response() -> dict:
+    """Build robot config response dict."""
+    from endpoints import robot as robot_mod
+    robot_cfg = config.section("robot")
+    model_name = robot_cfg.get("model", "unitree_g1")
+    model_info = robot_mod.get_model(model_name)
+    return {
+        "enabled": robot_cfg.get("enabled", False),
+        "model": model_name,
+        "connected": model_info["connected"] if model_info else False,
+        "capabilities": sorted(model_info["capabilities"]) if model_info else [],
+        "transport": robot_cfg.get("transport", "intercom"),
+        "heartbeat_interval": robot_cfg.get("heartbeat_interval", 5),
+        "disconnect_timeout": robot_cfg.get("disconnect_timeout", 15),
+        "disconnect_debounce": robot_cfg.get("disconnect_debounce", 3),
+        "safety_stop_on_disconnect": robot_cfg.get("safety_stop_on_disconnect", True),
+        "offline_mode": robot_cfg.get("offline_mode", "complete_task"),
+        "voice": robot_cfg.get("voice", "am_adam"),
+        "voice_lang": robot_cfg.get("voice_lang", "en"),
+        "model_config": robot_cfg.get(model_name, {}),
+    }
+
+
+@app.get("/api/config/robot")
+async def get_robot_config() -> JSONResponse:
+    return JSONResponse(_robot_config_response())
+
+
+@app.post("/api/config/robot")
+async def update_robot_config(request: Request) -> JSONResponse:
+    body = await request.json()
+    robot_cfg = config.section("robot")
+    model_name = robot_cfg.get("model", "unitree_g1")
+
+    for key, value in body.items():
+        if key in _ROBOT_SECURITY_KEYS:
+            continue  # skip security keys
+        if key.startswith(f"{model_name}."):
+            # Model-specific key
+            config.set(f"robot.{model_name}.{key[len(model_name)+1:]}", value)
+        elif key in ("enabled", "model", "transport", "heartbeat_interval",
+                     "disconnect_timeout", "disconnect_debounce",
+                     "safety_stop_on_disconnect", "offline_mode",
+                     "voice", "voice_lang"):
+            config.set(f"robot.{key}", value)
+    config.save()
+    await bus.publish("config.robot_updated", _robot_config_response())
+    return JSONResponse({"ok": True, **_robot_config_response()})
 
 
 # ---------------------------------------------------------------------------
@@ -1265,12 +830,22 @@ async def _periodic_sweep() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     cfg = config.load()
+    asr = config.section("asr")
+    llm = config.section("llm")
     print(f"[gateway] Starting on {cfg['host']}:{cfg['port']}")
-    print(f"[gateway] mlx_audio: {cfg['mlx_audio_base']}")
-    backend_type = "local/MLX" if not cfg.get("llm_base_url") else f"remote/{cfg['llm_base_url']}"
-    print(f"[gateway] LLM: {cfg['llm_model']} ({backend_type})")
+    print(f"[gateway] mlx_audio: {asr['backend']}")
+    backend_type = "local/MLX" if not llm.get("base_url") else f"remote/{llm['base_url']}"
+    print(f"[gateway] LLM: {llm['model']} ({backend_type})")
     llm_backend.preload()
     asyncio.create_task(_periodic_sweep())
+    # Load robot models (registers capabilities)
+    from endpoints import robot as robot_mod
+    robot_mod.load_models()
+    robot_cfg = config.section("robot")
+    if robot_cfg.get("enabled"):
+        print(f"[gateway] Robot: {robot_cfg.get('model', 'unitree_g1')} (enabled)")
+    else:
+        print("[gateway] Robot: disabled")
 
 
 # ---------------------------------------------------------------------------

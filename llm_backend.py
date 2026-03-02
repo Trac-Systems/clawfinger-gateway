@@ -23,13 +23,13 @@ _LOCAL_MODEL_NAME: str = ""
 _LOCAL_CONTEXT_WINDOW: int = 0  # auto-detected from model.args
 
 
-def _is_local(cfg: dict[str, Any]) -> bool:
-    return not cfg.get("llm_base_url")
+def _is_local(llm: dict[str, Any]) -> bool:
+    return not llm.get("base_url")
 
 
-def _ensure_local_llm(cfg: dict[str, Any]) -> tuple[Any, Any]:
+def _ensure_local_llm(llm: dict[str, Any]) -> tuple[Any, Any]:
     global _LOCAL_MODEL, _LOCAL_TOKENIZER, _LOCAL_MODEL_NAME, _LOCAL_CONTEXT_WINDOW
-    model_name = cfg.get("llm_model", "")
+    model_name = llm.get("model", "")
     if _LOCAL_MODEL is not None and _LOCAL_TOKENIZER is not None and _LOCAL_MODEL_NAME == model_name:
         return _LOCAL_MODEL, _LOCAL_TOKENIZER
     if mlx_load is None:
@@ -53,35 +53,35 @@ def get_context_window() -> int:
     """Return effective context window size in tokens.
 
     For local MLX models: auto-detected from model.args.max_position_embeddings.
-    For remote models: returns 0 (unknown — user must set llm_context_tokens manually).
+    For remote models: returns 0 (unknown — user must set llm.context_tokens manually).
     """
     return _LOCAL_CONTEXT_WINDOW
 
 
 def preload() -> None:
     """Preload local MLX model at startup."""
-    cfg = config.load()
-    if not _is_local(cfg):
+    llm = config.section("llm")
+    if not _is_local(llm):
         return
     try:
-        _ensure_local_llm(cfg)
+        _ensure_local_llm(llm)
         ctx = f", context_window={_LOCAL_CONTEXT_WINDOW}" if _LOCAL_CONTEXT_WINDOW else ""
-        print(f"[gateway] LLM preloaded: {cfg['llm_model']}{ctx}")
+        print(f"[gateway] LLM preloaded: {llm['model']}{ctx}")
     except Exception as exc:
         print(f"[gateway] LLM preload failed: {exc}")
 
 
 def generate(messages: list[dict[str, str]]) -> tuple[str, float, str]:
     """Generate LLM reply. Returns (reply_text, llm_ms, model_name)."""
-    cfg = config.load()
-    if _is_local(cfg):
-        return _generate_local(messages, cfg)
-    return _generate_remote(messages, cfg)
+    llm = config.section("llm")
+    if _is_local(llm):
+        return _generate_local(messages, llm)
+    return _generate_remote(messages, llm)
 
 
-def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tuple[str, float, str]:
+def _generate_local(messages: list[dict[str, str]], llm: dict[str, Any]) -> tuple[str, float, str]:
     start = time.perf_counter()
-    model, tokenizer = _ensure_local_llm(cfg)
+    model, tokenizer = _ensure_local_llm(llm)
     prompt = _apply_chat_template(tokenizer, messages)
 
     if mlx_generate is None:
@@ -89,16 +89,16 @@ def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tupl
 
     kwargs: dict[str, Any] = {
         "prompt": prompt,
-        "max_tokens": cfg.get("llm_max_tokens", 400),
-        "temp": cfg.get("llm_temperature", 0.2),
+        "max_tokens": llm.get("max_tokens", 400),
+        "temp": llm.get("temperature", 0.2),
         "verbose": False,
     }
-    if cfg.get("llm_top_p_enabled", True) and cfg.get("llm_top_p", 1.0) < 1.0:
-        kwargs["top_p"] = cfg["llm_top_p"]
-    if cfg.get("llm_top_k_enabled", True) and cfg.get("llm_top_k", 0) > 0:
-        kwargs["top_k"] = cfg["llm_top_k"]
-    if cfg.get("llm_repeat_penalty", 1.0) != 1.0:
-        kwargs["repetition_penalty"] = cfg["llm_repeat_penalty"]
+    if llm.get("top_p_enabled", True) and llm.get("top_p", 1.0) < 1.0:
+        kwargs["top_p"] = llm["top_p"]
+    if llm.get("top_k_enabled", True) and llm.get("top_k", 0) > 0:
+        kwargs["top_k"] = llm["top_k"]
+    if llm.get("repeat_penalty", 1.0) != 1.0:
+        kwargs["repetition_penalty"] = llm["repeat_penalty"]
 
     try:
         text = mlx_generate(model, tokenizer, **kwargs)
@@ -107,7 +107,7 @@ def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tupl
         text = mlx_generate(
             model, tokenizer,
             prompt=prompt,
-            max_tokens=cfg.get("llm_max_tokens", 400),
+            max_tokens=llm.get("max_tokens", 400),
             verbose=False,
         )
 
@@ -115,32 +115,32 @@ def _generate_local(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tupl
     if not text:
         text = "Got it. Please continue."
 
-    return text, (time.perf_counter() - start) * 1000, f"local/{cfg['llm_model']}"
+    return text, (time.perf_counter() - start) * 1000, f"local/{llm['model']}"
 
 
-def _generate_remote(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tuple[str, float, str]:
+def _generate_remote(messages: list[dict[str, str]], llm: dict[str, Any]) -> tuple[str, float, str]:
     start = time.perf_counter()
-    base_url = cfg["llm_base_url"].rstrip("/")
+    base_url = llm["base_url"].rstrip("/")
     if not base_url:
-        raise RuntimeError("llm_base_url not configured")
+        raise RuntimeError("llm.base_url not configured")
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
-    api_key = cfg.get("llm_api_key", "")
+    api_key = llm.get("api_key", "")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     payload: dict[str, Any] = {
-        "model": cfg["llm_model"],
+        "model": llm["model"],
         "messages": messages,
-        "max_tokens": cfg.get("llm_max_tokens", 400),
-        "temperature": cfg.get("llm_temperature", 0.2),
+        "max_tokens": llm.get("max_tokens", 400),
+        "temperature": llm.get("temperature", 0.2),
         "stream": False,
     }
-    if cfg.get("llm_top_p_enabled", True) and cfg.get("llm_top_p", 1.0) < 1.0:
-        payload["top_p"] = cfg["llm_top_p"]
-    if cfg.get("llm_repeat_penalty", 1.0) != 1.0:
-        payload["frequency_penalty"] = cfg["llm_repeat_penalty"] - 1.0
-    stop = cfg.get("llm_stop", [])
+    if llm.get("top_p_enabled", True) and llm.get("top_p", 1.0) < 1.0:
+        payload["top_p"] = llm["top_p"]
+    if llm.get("repeat_penalty", 1.0) != 1.0:
+        payload["frequency_penalty"] = llm["repeat_penalty"] - 1.0
+    stop = llm.get("stop", [])
     if stop:
         payload["stop"] = stop
 
@@ -153,7 +153,7 @@ def _generate_remote(messages: list[dict[str, str]], cfg: dict[str, Any]) -> tup
         text = "Got it. Please continue."
     text = trim_for_tts(text)
 
-    return text, (time.perf_counter() - start) * 1000, cfg["llm_model"]
+    return text, (time.perf_counter() - start) * 1000, llm["model"]
 
 
 def _extract_openai_text(payload: dict[str, Any]) -> str:
@@ -172,17 +172,17 @@ def _extract_openai_text(payload: dict[str, Any]) -> str:
 
 def check_health() -> dict:
     """Check LLM backend health."""
-    cfg = config.load()
-    if _is_local(cfg):
+    llm = config.section("llm")
+    if _is_local(llm):
         return {
             "backend": "mlx_local",
-            "model": cfg["llm_model"],
+            "model": llm["model"],
             "loaded": _LOCAL_MODEL is not None,
             "mlx_lm_available": mlx_load is not None,
         }
     return {
         "backend": "openai_remote",
-        "base_url": cfg.get("llm_base_url", ""),
-        "model": cfg.get("llm_model", ""),
-        "configured": bool(cfg.get("llm_base_url")),
+        "base_url": llm.get("base_url", ""),
+        "model": llm.get("model", ""),
+        "configured": bool(llm.get("base_url")),
     }

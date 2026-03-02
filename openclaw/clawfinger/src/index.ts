@@ -354,6 +354,60 @@ export default function register(api: OpenClawPluginApi) {
     },
   });
 
+  // --- Robot tools ---
+
+  api.registerTool({
+    name: "clawfinger_robot_status",
+    label: "Clawfinger Robot Status",
+    description:
+      "Get robot status: connection state, battery, pose, model, capabilities, current task. Requires robot endpoint to be enabled.",
+    parameters: Type.Object({}),
+    async execute() {
+      const config = await client.getRobotConfig();
+      return {
+        content: [{ type: "text", text: JSON.stringify(config) }],
+        details: config,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_config_get",
+    label: "Clawfinger Get Robot Config",
+    description:
+      "Read robot configuration: model, transport, capabilities, and model-specific settings.",
+    parameters: Type.Object({}),
+    async execute() {
+      const config = await client.getRobotConfig();
+      return {
+        content: [{ type: "text", text: JSON.stringify(config) }],
+        details: config,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_config_set",
+    label: "Clawfinger Set Robot Config",
+    description:
+      "Update robot configuration. Pass only fields to change. Security keys (intercom_key, safety_stop_on_disconnect, enable_low_level) are blocked from agents.",
+    parameters: Type.Object({
+      config: Type.Record(Type.String(), Type.Unknown(), {
+        description: "Config fields to update",
+      }),
+    }),
+    async execute(
+      _id: string,
+      params: { config: Record<string, unknown> },
+    ) {
+      const result = await client.setRobotConfig(params.config);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: result,
+      };
+    },
+  });
+
   api.registerTool({
     name: "clawfinger_instructions_set",
     label: "Clawfinger Set Instructions",
@@ -425,6 +479,7 @@ export default function register(api: OpenClawPluginApi) {
     "/clawfinger config call                      — show call policy settings",
     "/clawfinger config tts                       — show TTS voice and speed",
     "/clawfinger config llm                       — show LLM model and params",
+    "/clawfinger config robot                     — show robot config and capabilities",
     "/clawfinger instructions <text>              — set global LLM instructions",
     "/clawfinger instructions <session_id> <text> — set per-session instructions",
     "/clawfinger end <session_id>                 — mark a session as ended (hung up)",
@@ -571,7 +626,11 @@ export default function register(api: OpenClawPluginApi) {
             const cfg = await client.getLlmConfig();
             return { text: JSON.stringify(cfg, null, 2) };
           }
-          return { text: "Usage: /clawfinger config call|tts|llm" };
+          if (sub === "robot") {
+            const cfg = await client.getRobotConfig();
+            return { text: JSON.stringify(cfg, null, 2) };
+          }
+          return { text: "Usage: /clawfinger config call|tts|llm|robot" };
         }
 
         // --- instructions <session_id> <text> ---

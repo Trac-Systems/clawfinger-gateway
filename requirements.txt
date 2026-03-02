@@ -4,3 +4,5 @@ httpx>=0.28
 python-multipart>=0.0.18
 mlx-lm>=0.22
 mlx-audio>=0.2
+pytest>=8.0
+pytest-asyncio>=0.24

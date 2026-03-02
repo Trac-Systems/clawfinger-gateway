@@ -124,4 +124,14 @@ export class GatewayClient {
   async setLlmConfig(patch: Record<string, unknown>): Promise<any> {
     return this.post("/api/config/llm", patch);
   }
+
+  // --- Config: Robot ---
+
+  async getRobotConfig(): Promise<any> {
+    return this.get("/api/config/robot");
+  }
+
+  async setRobotConfig(patch: Record<string, unknown>): Promise<any> {
+    return this.post("/api/config/robot", patch);
+  }
 }

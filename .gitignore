@@ -9,6 +9,7 @@ __pycache__/
 
 # Runtime data
 sessions/
+caller_history/
 tmp/
 logs/
 
@@ -23,3 +24,7 @@ voices/*.onnx.json
 .idea/
 *.swp
 .DS_Store
+
+# Misc
+linked.txt
+test_takeover.py

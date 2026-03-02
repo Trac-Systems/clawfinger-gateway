@@ -17,7 +17,7 @@ _AGENT_KNOWLEDGE: dict[str, str] = {}
 
 def get_base() -> str:
     """Return the immutable default system prompt from config (never mutated at runtime)."""
-    return config.get("llm_system_prompt", "")
+    return config.get("llm.system_prompt", "")
 
 
 def get_session(sid: str) -> str:

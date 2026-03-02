@@ -23,11 +23,12 @@ class EventBus:
         async with self._lock:
             self._subscribers.discard(ws)
 
-    async def publish(self, event_type: str, data: dict[str, Any] | None = None, session_id: str = "") -> None:
+    async def publish(self, event_type: str, data: dict[str, Any] | None = None, session_id: str = "", endpoint: str = "") -> None:
         event = {
             "type": event_type,
             "timestamp": time.time(),
             "session_id": session_id,
+            "endpoint": endpoint,
             "data": data or {},
         }
         payload = json.dumps(event, default=str)
