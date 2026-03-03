@@ -282,6 +282,12 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
     g1.setdefault("enable_hands", True)
     g1.setdefault("enable_low_level", False)
     g1.setdefault("wifi_networks", [])
+    memory = robot.setdefault("memory", {})
+    memory.setdefault("enabled", True)
+    memory.setdefault("db_path", "data/spatial_memory")
+    memory.setdefault("embedding_model", "ViT-B-32")
+    memory.setdefault("embedding_device", "mps")
+    memory.setdefault("max_observations", 100000)
 
     # Agent defaults
     agent = cfg.setdefault("agent", {})

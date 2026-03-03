@@ -111,6 +111,13 @@
       "enable_hands": true,
       "enable_low_level": false,
       "wifi_networks": []
+    },
+    "memory": {
+      "enabled": true,
+      "db_path": "data/spatial_memory",
+      "embedding_model": "ViT-B-32",
+      "embedding_device": "mps",
+      "max_observations": 100000
     }
   },
 

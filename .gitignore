@@ -8,6 +8,7 @@ __pycache__/
 .models/
 
 # Runtime data
+data/
 sessions/
 caller_history/
 tmp/
