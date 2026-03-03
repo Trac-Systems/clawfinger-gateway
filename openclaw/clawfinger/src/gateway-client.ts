@@ -134,4 +134,69 @@ export class GatewayClient {
   async setRobotConfig(patch: Record<string, unknown>): Promise<any> {
     return this.post("/api/config/robot", patch);
   }
+
+  // --- Robot commands ---
+
+  async sendRobotCommand(
+    command: string,
+    params?: Record<string, unknown>,
+  ): Promise<any> {
+    return this.post("/api/config/robot", {
+      // Robot commands go through the agent WS, not REST (yet).
+      // This is a placeholder for future REST endpoint /api/robot/command.
+      command,
+      params,
+    });
+  }
+
+  // --- Robot skills + projects ---
+
+  async listRobotSkills(): Promise<any> {
+    return this.get("/api/robot/skills");
+  }
+
+  async getRobotSkillTopic(name: string, topic: string): Promise<any> {
+    return this.get(`/api/robot/skills/${name}/${topic}`);
+  }
+
+  async getRobotProjectStatus(): Promise<any> {
+    return this.get("/api/robot/project");
+  }
+
+  async cancelRobotProject(): Promise<any> {
+    return this.post("/api/robot/project/cancel");
+  }
+
+  // --- Robot perception ---
+
+  async robotPerceptionSources(): Promise<any> {
+    return this.get("/api/robot/perception");
+  }
+
+  async robotSnapshot(source?: string): Promise<any> {
+    return this.post("/api/robot/camera/snapshot", source ? { source } : {});
+  }
+
+  async robotDescribe(source?: string, prompt?: string): Promise<any> {
+    const body: Record<string, string> = {};
+    if (source) body.source = source;
+    if (prompt) body.prompt = prompt;
+    return this.post("/api/robot/camera/describe", body);
+  }
+
+  async robotStreamStart(source?: string): Promise<any> {
+    return this.post("/api/robot/camera/stream/start", source ? { source } : {});
+  }
+
+  async robotStreamStop(source?: string): Promise<any> {
+    return this.post("/api/robot/camera/stream/stop", source ? { source } : {});
+  }
+
+  async robotAudioMonitorStart(source?: string): Promise<any> {
+    return this.post("/api/robot/audio/monitor/start", source ? { source } : {});
+  }
+
+  async robotAudioMonitorStop(source?: string): Promise<any> {
+    return this.post("/api/robot/audio/monitor/stop", source ? { source } : {});
+  }
 }

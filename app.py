@@ -8,8 +8,8 @@ import json
 import tempfile
 import time
 from pathlib import Path
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 import httpx
 
@@ -22,6 +22,10 @@ import voice_pipeline
 from event_bus import bus
 from endpoints.phone import adb as phone_adb
 from endpoints.phone import routes as phone_routes_mod
+from endpoints import robot as robot_mod
+from endpoints.robot import controller as robot_ctrl
+from endpoints.robot import perception as robot_perception
+from endpoints.robot import skill_loader as robot_skills
 from endpoints.phone.routes import (
     router as phone_router,
     call_config_response as _call_config_response,
@@ -37,6 +41,10 @@ _TMP_DIR = _ROOT / "tmp"
 _TMP_DIR.mkdir(parents=True, exist_ok=True)
 _STATIC_DIR = _ROOT / "static"
 _START_TIME = time.time()
+
+# Intercom transport state (set during startup if robot.enabled)
+_intercom_process = None
+_intercom_bridge = None
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +250,15 @@ async def agent_ws(ws: WebSocket) -> None:
             request_id = msg.get("request_id")
             if request_id and "reply" in msg:
                 reply_text = str(msg["reply"])
-                agent_interface.resolve_turn_reply(str(request_id), reply_text)
+                commands = msg.get("commands")
+                # Try robot takeover reply first, then phone
+                if robot_ctrl.get_takeover_agent():
+                    robot_ctrl.resolve_agent_reply(
+                        str(request_id), reply_text,
+                        commands=commands if isinstance(commands, list) else None,
+                    )
+                else:
+                    agent_interface.resolve_turn_reply(str(request_id), reply_text)
                 continue
 
             msg_type = str(msg.get("type", ""))
@@ -376,12 +392,48 @@ async def agent_ws(ws: WebSocket) -> None:
                 else:
                     await ws.send_json({"type": "end_session.ack", "ok": False})
 
+            elif msg_type == "robot_command":
+                result = await robot_mod.dispatch_command(
+                    config.get("robot.model", "unitree_g1"),
+                    msg.get("command", {}),
+                )
+                await ws.send_json({"type": "robot.command.ack", **result})
+
+            elif msg_type == "robot_status":
+                cfg = _robot_config_response()
+                await ws.send_json({"type": "robot.status", **cfg})
+
+            elif msg_type == "robot_skill_list":
+                skills = robot_skills.list_skills()
+                await ws.send_json({"type": "robot.skill.list", "skills": skills})
+
+            elif msg_type == "robot_project_status":
+                project = robot_ctrl.current_project()
+                await ws.send_json({"type": "robot.project.status", **(project or {"status": "idle"})})
+
+            elif msg_type == "robot_project_cancel":
+                result = await robot_ctrl.cancel_project()
+                await ws.send_json({"type": "robot.project.cancel.ack", **result})
+
+            elif msg_type == "robot_takeover":
+                agent_id = agent_interface.get_agent_id(ws)
+                robot_ctrl.set_takeover_agent(agent_id)
+                await ws.send_json({"type": "robot_takeover.ack", "ok": True})
+
+            elif msg_type == "robot_release":
+                robot_ctrl.set_takeover_agent(None)
+                await ws.send_json({"type": "robot_release.ack", "ok": True})
+
             elif msg_type == "ping":
                 await ws.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
         pass
     finally:
+        # Release robot takeover if this agent held it
+        agent_id = agent_interface.get_agent_id(ws)
+        if agent_id and robot_ctrl.get_takeover_agent() == agent_id:
+            robot_ctrl.set_takeover_agent(None)
         await agent_interface.agent_disconnect(ws)
 
 
@@ -593,7 +645,7 @@ async def tts_preview(request: Request) -> JSONResponse:
         preview_voice = str(body.get("voice", "")) or tts.get("voice", "am_adam")
         preview_speed = float(body.get("speed", 0)) or tts.get("speed", 1.2)
 
-        mlx_base = asr["backend"].rstrip("/")
+        mlx_base = (tts.get("mlx_audio_base") or asr["backend"]).rstrip("/")
         payload = {
             "model": tts["model"],
             "input": voice_pipeline.trim_for_tts(text),
@@ -727,11 +779,10 @@ _ROBOT_SECURITY_KEYS = {
 
 def _robot_config_response() -> dict:
     """Build robot config response dict."""
-    from endpoints import robot as robot_mod
     robot_cfg = config.section("robot")
     model_name = robot_cfg.get("model", "unitree_g1")
     model_info = robot_mod.get_model(model_name)
-    return {
+    resp = {
         "enabled": robot_cfg.get("enabled", False),
         "model": model_name,
         "connected": model_info["connected"] if model_info else False,
@@ -746,6 +797,13 @@ def _robot_config_response() -> dict:
         "voice_lang": robot_cfg.get("voice_lang", "en"),
         "model_config": robot_cfg.get(model_name, {}),
     }
+    # Add transport state when bridge is available
+    if _intercom_bridge is not None:
+        resp["transport_connected"] = _intercom_bridge.is_connected()
+        resp["intercom_channel"] = robot_cfg.get("intercom_channel", "clawfinger-robot-g1")
+    if _intercom_process is not None:
+        resp["intercom_running"] = _intercom_process.is_running
+    return resp
 
 
 @app.get("/api/config/robot")
@@ -773,6 +831,301 @@ async def update_robot_config(request: Request) -> JSONResponse:
     config.save()
     await bus.publish("config.robot_updated", _robot_config_response())
     return JSONResponse({"ok": True, **_robot_config_response()})
+
+
+# ---------------------------------------------------------------------------
+# Robot skills + project endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/robot/skills")
+async def list_robot_skills(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    return JSONResponse(robot_skills.list_skills())
+
+
+@app.get("/api/robot/skills/{name}/{topic}")
+async def get_robot_skill_topic(name: str, topic: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    skill = robot_skills.get_skill(name)
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+    if skill.get("execution_mode") == "fast":
+        raise HTTPException(status_code=400, detail="Fast-path skills have no topic content")
+    content = robot_skills.get_topic(name, topic)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"Topic not found: {name}/{topic}")
+    return JSONResponse({"skill": name, "topic": topic, "content": content})
+
+
+@app.get("/api/robot/project")
+async def get_robot_project(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    project = robot_ctrl.current_project()
+    if project:
+        return JSONResponse(project)
+    return JSONResponse({"status": "idle"})
+
+
+@app.post("/api/robot/project/cancel")
+async def cancel_robot_project(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    result = await robot_ctrl.cancel_project()
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Robot perception endpoints
+# ---------------------------------------------------------------------------
+
+def _check_perception_source(model_name: str, source: str, kind: str = "camera") -> None:
+    """Validate source exists in model's perception. Raises HTTPException if not."""
+    perception = robot_mod.get_perception(model_name)
+    key = "cameras" if kind == "camera" else "microphones"
+    sources = perception.get(key, [])
+    if not sources:
+        raise HTTPException(400, f"Robot model '{model_name}' has no {kind}s")
+    valid_ids = [s["id"] for s in sources]
+    if source not in valid_ids:
+        raise HTTPException(400, f"Unknown {kind} source '{source}'. Available: {valid_ids}")
+
+
+def _default_source(model_name: str, kind: str = "camera") -> str:
+    """Return the first available source ID for a kind, or raise 400."""
+    perception = robot_mod.get_perception(model_name)
+    key = "cameras" if kind == "camera" else "microphones"
+    sources = perception.get(key, [])
+    if not sources:
+        raise HTTPException(400, f"Robot model '{model_name}' has no {kind}s")
+    return sources[0]["id"]
+
+
+def _require_robot_connected() -> str:
+    """Check robot is connected, return model name. Raises HTTPException if not."""
+    robot_cfg = config.section("robot")
+    model_name = robot_cfg.get("model", "unitree_g1")
+    model = robot_mod.get_model(model_name)
+    if not model or not model.get("connected"):
+        raise HTTPException(503, "Robot not connected")
+    return model_name
+
+
+@app.get("/api/robot/perception")
+async def get_perception_sources(request: Request) -> JSONResponse:
+    """List available perception sources (cameras + mics) from model defaults."""
+    _check_bearer(request)
+    robot_cfg = config.section("robot")
+    model_name = robot_cfg.get("model", "unitree_g1")
+    perception = robot_mod.get_perception(model_name)
+    return JSONResponse({
+        "model": model_name,
+        "cameras": perception.get("cameras", []),
+        "microphones": perception.get("microphones", []),
+        "active_streams": robot_perception.active_streams(),
+        "active_monitors": robot_perception.active_monitors(),
+    })
+
+
+@app.post("/api/robot/camera/snapshot")
+async def robot_camera_snapshot(request: Request) -> JSONResponse:
+    """Capture a single frame from a camera source."""
+    _check_bearer(request)
+    model_name = _require_robot_connected()
+    body = await request.json() if await request.body() else {}
+    source = body.get("source") or _default_source(model_name, "camera")
+    _check_perception_source(model_name, source, "camera")
+
+    robot_cfg = config.section("robot")
+    cam_cfg = robot_cfg.get("camera", {})
+    result = await _intercom_bridge.send_and_wait({
+        "type": "camera_snapshot",
+        "source": source,
+        "width": body.get("width", cam_cfg.get("width", 640)),
+        "height": body.get("height", cam_cfg.get("height", 480)),
+        "quality": body.get("quality", cam_cfg.get("quality", 50)),
+    }, timeout=body.get("timeout", 10.0))
+
+    if not result or not result.get("ok"):
+        raise HTTPException(502, result.get("error", "Snapshot failed") if result else "No response from robot")
+
+    # Store snapshot for later retrieval
+    image_b64 = result.get("image_base64", "")
+    if image_b64:
+        robot_perception.set_snapshot(source, base64.b64decode(image_b64))
+
+    await bus.publish("robot.snapshot", {
+        "source": source,
+        "image_base64": image_b64,
+    }, endpoint="robot")
+
+    return JSONResponse({
+        "ok": True,
+        "source": source,
+        "image_base64": image_b64,
+        "width": result.get("width"),
+        "height": result.get("height"),
+    })
+
+
+@app.post("/api/robot/camera/describe")
+async def robot_camera_describe(request: Request) -> JSONResponse:
+    """Capture a frame and run VLM scene description on the Jetson."""
+    _check_bearer(request)
+    model_name = _require_robot_connected()
+    body = await request.json() if await request.body() else {}
+    source = body.get("source") or _default_source(model_name, "camera")
+    _check_perception_source(model_name, source, "camera")
+
+    result = await _intercom_bridge.send_and_wait({
+        "type": "camera_describe",
+        "source": source,
+        "prompt": body.get("prompt", "Describe what you see."),
+    }, timeout=body.get("timeout", 30.0))
+
+    if not result or not result.get("ok"):
+        raise HTTPException(502, result.get("error", "Describe failed") if result else "No response from robot")
+
+    await bus.publish("robot.scene_description", {
+        "source": source,
+        "description": result.get("description", ""),
+    }, endpoint="robot")
+
+    return JSONResponse({
+        "ok": True,
+        "source": source,
+        "description": result.get("description", ""),
+        "image_base64": result.get("image_base64", ""),
+    })
+
+
+@app.get("/api/robot/camera/stream")
+async def robot_camera_stream(
+    request: Request,
+    source: str = Query(""),
+    token: str = Query(""),
+) -> StreamingResponse:
+    """MJPEG video stream from a camera source.
+
+    Uses query-param auth (?token=) since <img> tags can't send headers.
+    """
+    # Auth: accept query param OR header
+    bearer = config.get("bearer_token", "")
+    if bearer:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header != f"Bearer {bearer}" and token != bearer:
+            raise HTTPException(401, "Unauthorized")
+
+    model_name = _require_robot_connected()
+    if not source:
+        source = _default_source(model_name, "camera")
+    _check_perception_source(model_name, source, "camera")
+
+    if not robot_perception.is_streaming(source):
+        raise HTTPException(409, f"Stream not active for source '{source}'. POST /api/robot/camera/stream/start first.")
+
+    async def mjpeg_generator():
+        async for frame in robot_perception.frame_generator(source):
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(frame)).encode() + b"\r\n"
+                b"\r\n" + frame + b"\r\n"
+            )
+
+    return StreamingResponse(
+        mjpeg_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.post("/api/robot/camera/stream/start")
+async def robot_camera_stream_start(request: Request) -> JSONResponse:
+    """Start continuous video stream from a camera source."""
+    _check_bearer(request)
+    model_name = _require_robot_connected()
+    body = await request.json() if await request.body() else {}
+    source = body.get("source") or _default_source(model_name, "camera")
+    _check_perception_source(model_name, source, "camera")
+
+    if robot_perception.is_streaming(source):
+        return JSONResponse({"ok": True, "source": source, "detail": "already streaming"})
+
+    robot_cfg = config.section("robot")
+    cam_cfg = robot_cfg.get("camera", {})
+    robot_perception.set_streaming(source, True)
+    await _intercom_bridge.send({
+        "type": "camera_stream_start",
+        "source": source,
+        "fps": body.get("fps", cam_cfg.get("stream_fps", 5)),
+        "width": body.get("width", cam_cfg.get("width", 640)),
+        "height": body.get("height", cam_cfg.get("height", 480)),
+        "quality": body.get("quality", cam_cfg.get("quality", 50)),
+    })
+
+    await bus.publish("robot.camera.stream_started", {"source": source}, endpoint="robot")
+    return JSONResponse({"ok": True, "source": source})
+
+
+@app.post("/api/robot/camera/stream/stop")
+async def robot_camera_stream_stop(request: Request) -> JSONResponse:
+    """Stop video stream from a camera source."""
+    _check_bearer(request)
+    model_name = _require_robot_connected()
+    body = await request.json() if await request.body() else {}
+    source = body.get("source") or _default_source(model_name, "camera")
+
+    robot_perception.set_streaming(source, False)
+    await _intercom_bridge.send({
+        "type": "camera_stream_stop",
+        "source": source,
+    })
+
+    await bus.publish("robot.camera.stream_stopped", {"source": source}, endpoint="robot")
+    return JSONResponse({"ok": True, "source": source})
+
+
+@app.post("/api/robot/audio/monitor/start")
+async def robot_audio_monitor_start(request: Request) -> JSONResponse:
+    """Start mic audio monitoring stream."""
+    _check_bearer(request)
+    model_name = _require_robot_connected()
+    body = await request.json() if await request.body() else {}
+    source = body.get("source") or _default_source(model_name, "microphone")
+    _check_perception_source(model_name, source, "microphone")
+
+    if robot_perception.is_monitoring(source):
+        return JSONResponse({"ok": True, "source": source, "detail": "already monitoring"})
+
+    robot_cfg = config.section("robot")
+    audio_cfg = robot_cfg.get("audio_monitor", {})
+    robot_perception.set_monitoring(source, True)
+    await _intercom_bridge.send({
+        "type": "audio_monitor_start",
+        "source": source,
+        "sample_rate": body.get("sample_rate", audio_cfg.get("sample_rate", 16000)),
+        "channels": body.get("channels", audio_cfg.get("channels", 1)),
+        "chunk_ms": body.get("chunk_ms", audio_cfg.get("chunk_ms", 100)),
+    })
+
+    await bus.publish("robot.audio.monitor_started", {"source": source}, endpoint="robot")
+    return JSONResponse({"ok": True, "source": source})
+
+
+@app.post("/api/robot/audio/monitor/stop")
+async def robot_audio_monitor_stop(request: Request) -> JSONResponse:
+    """Stop mic audio monitoring stream."""
+    _check_bearer(request)
+    model_name = _require_robot_connected()
+    body = await request.json() if await request.body() else {}
+    source = body.get("source") or _default_source(model_name, "microphone")
+
+    robot_perception.set_monitoring(source, False)
+    await _intercom_bridge.send({
+        "type": "audio_monitor_stop",
+        "source": source,
+    })
+
+    await bus.publish("robot.audio.monitor_stopped", {"source": source}, endpoint="robot")
+    return JSONResponse({"ok": True, "source": source})
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +1180,152 @@ async def _periodic_sweep() -> None:
             pass  # Don't crash the background loop
 
 
+async def _start_intercom_transport() -> None:
+    """Start Intercom process and bridge when robot.enabled + transport=intercom."""
+    global _intercom_process, _intercom_bridge
+
+    robot_cfg = config.section("robot")
+    channel = robot_cfg.get("intercom_channel", "clawfinger-robot-g1")
+    sc_bridge_port = robot_cfg.get("sc_bridge_port", 49222)
+    intercom_key = robot_cfg.get("intercom_key", "")
+    pear_path = robot_cfg.get("pear_path", "")
+
+    # Read SC-Bridge token
+    token_path = _TMP_DIR / ".sc_bridge_token"
+    sc_bridge_token = ""
+    if token_path.exists():
+        sc_bridge_token = token_path.read_text().strip()
+    if not sc_bridge_token:
+        print("[gateway] WARNING: No SC-Bridge token found at tmp/.sc_bridge_token")
+        print("[gateway]   Run bin/intercom-pair.sh first to generate one")
+
+    # Start Intercom Pear process
+    from transport.intercom_manager import IntercomProcess
+    _intercom_process = IntercomProcess(
+        channel=channel,
+        sc_bridge_port=sc_bridge_port,
+        sc_bridge_token=sc_bridge_token,
+        inviter_keys=intercom_key,
+        pear_path=pear_path,
+        intercom_limits=robot_cfg.get("intercom_limits", {}),
+    )
+    await _intercom_process.start()
+
+    # Brief wait for SC-Bridge to come up
+    await asyncio.sleep(2)
+
+    # Start bridge
+    from transport.intercom_bridge import IntercomBridge
+    model_name = robot_cfg.get("model", "unitree_g1")
+    _intercom_bridge = IntercomBridge(
+        channel=channel,
+        sc_bridge_url=f"ws://127.0.0.1:{sc_bridge_port}",
+        sc_bridge_token=sc_bridge_token,
+        heartbeat_interval=robot_cfg.get("heartbeat_interval", 5),
+        disconnect_timeout=robot_cfg.get("disconnect_timeout", 15),
+        disconnect_debounce=robot_cfg.get("disconnect_debounce", 3),
+    )
+
+    async def _on_robot_connected():
+        robot_mod.set_connected(model_name, True)
+        await bus.publish("robot.connected", {"model": model_name}, endpoint="robot")
+        print(f"[gateway] Robot connected: {model_name}")
+
+    async def _on_robot_disconnected(reason: str):
+        robot_mod.set_connected(model_name, False)
+        # Stop all perception streams/monitors on disconnect
+        robot_perception.stop_all()
+        await bus.publish("robot.camera.stream_stopped", {}, endpoint="robot")
+        await bus.publish("robot.audio.monitor_stopped", {}, endpoint="robot")
+        await bus.publish("robot.disconnected", {"model": model_name, "reason": reason}, endpoint="robot")
+        print(f"[gateway] Robot disconnected: {model_name} ({reason})")
+        # Safety stop on disconnect
+        if robot_cfg.get("safety_stop_on_disconnect", True):
+            try:
+                await _intercom_bridge.send({"type": "robot_command", "command": "safety_stop"})
+                await bus.publish("robot.safety_stop", {"model": model_name, "reason": reason}, endpoint="robot")
+            except Exception:
+                pass
+
+    async def _on_robot_message(msg: dict):
+        msg_type = msg.get("type", "")
+        if msg_type == "camera_frame":
+            robot_perception.push_frame(
+                msg.get("source", "head_rgb"),
+                msg.get("image_base64", ""),
+                msg.get("seq", 0),
+                msg.get("ts", time.time()),
+            )
+            return
+        elif msg_type == "audio_chunk":
+            source = msg.get("source", "mic_array")
+            robot_perception.push_audio(
+                source,
+                msg.get("audio_base64", ""),
+                msg.get("sample_rate", 16000),
+                msg.get("channels", 1),
+                msg.get("seq", 0),
+                msg.get("ts", time.time()),
+            )
+            # Publish via event bus for control center Web Audio playback
+            await bus.publish("robot.audio_chunk", {
+                "source": source,
+                "audio_base64": msg.get("audio_base64", ""),
+                "sample_rate": msg.get("sample_rate", 16000),
+            }, endpoint="robot")
+            return
+        elif msg_type == "robot_event":
+            await bus.publish(f"robot.event.{msg.get('event', 'unknown')}", msg, endpoint="robot")
+        elif msg_type == "robot_voice_input":
+            transcript = msg.get("transcript", "")
+            wake_verified = msg.get("wake_word_detected", False)
+            if not transcript:
+                return
+            # If Jetson didn't verify wake word, gateway checks
+            if not wake_verified:
+                accepted, transcript = robot_ctrl.check_wake_word(transcript)
+                if not accepted:
+                    return
+            result = await robot_ctrl.handle_voice_turn(transcript)
+            # Send speech to robot speaker via Intercom
+            if result.get("say"):
+                await _intercom_bridge.send({
+                    "type": "robot_speak",
+                    "text": result["say"],
+                    "voice": robot_cfg.get("voice", "am_adam"),
+                    "speed": robot_cfg.get("voice_speed", 1.0),
+                })
+            # Send gesture command
+            if result.get("gesture"):
+                await robot_mod.dispatch_command(
+                    robot_cfg.get("model", "unitree_g1"),
+                    {"type": result["gesture"], "params": {}},
+                )
+            # Forward robot_turn.request to takeover agent if active
+            if robot_ctrl.get_takeover_agent():
+                for agent_ws_conn in agent_interface.list_agent_connections():
+                    agent_id = agent_interface.get_agent_id(agent_ws_conn)
+                    if agent_id == robot_ctrl.get_takeover_agent():
+                        try:
+                            await agent_ws_conn.send_json({
+                                "type": "robot_turn.request",
+                                "transcript": transcript,
+                                "request_id": str(__import__("uuid").uuid4()),
+                            })
+                        except Exception:
+                            pass
+
+    _intercom_bridge.on_connected(_on_robot_connected)
+    _intercom_bridge.on_disconnected(_on_robot_disconnected)
+    _intercom_bridge.on_message(_on_robot_message)
+
+    robot_mod.set_transport(_intercom_bridge)
+    await _intercom_bridge.start()
+
+    await bus.publish("transport.started", {"channel": channel}, endpoint="robot")
+    print(f"[gateway] Intercom transport started (channel: {channel})")
+
+
 @app.on_event("startup")
 async def startup() -> None:
     cfg = config.load()
@@ -838,14 +1337,33 @@ async def startup() -> None:
     print(f"[gateway] LLM: {llm['model']} ({backend_type})")
     llm_backend.preload()
     asyncio.create_task(_periodic_sweep())
-    # Load robot models (registers capabilities)
-    from endpoints import robot as robot_mod
+    # Load robot models (registers capabilities) and skills
     robot_mod.load_models()
+    robot_skills.load_skills()
+    skills_loaded = robot_skills.list_skills()
+    if skills_loaded:
+        print(f"[gateway] Robot skills loaded: {len(skills_loaded)} ({', '.join(s['name'] for s in skills_loaded)})")
     robot_cfg = config.section("robot")
     if robot_cfg.get("enabled"):
         print(f"[gateway] Robot: {robot_cfg.get('model', 'unitree_g1')} (enabled)")
+        if robot_cfg.get("transport") == "intercom":
+            try:
+                await _start_intercom_transport()
+            except Exception as exc:
+                print(f"[gateway] WARNING: Intercom transport failed to start: {exc}")
     else:
         print("[gateway] Robot: disabled")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global _intercom_bridge, _intercom_process
+    if _intercom_bridge:
+        await _intercom_bridge.stop()
+        _intercom_bridge = None
+    if _intercom_process:
+        await _intercom_process.stop()
+        _intercom_process = None
 
 
 # ---------------------------------------------------------------------------

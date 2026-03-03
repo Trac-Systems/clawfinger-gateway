@@ -360,13 +360,60 @@ export default function register(api: OpenClawPluginApi) {
     name: "clawfinger_robot_status",
     label: "Clawfinger Robot Status",
     description:
-      "Get robot status: connection state, battery, pose, model, capabilities, current task. Requires robot endpoint to be enabled.",
+      "Get robot status: connection state, transport info, model, capabilities. Works even when robot is disconnected — shows transport state.",
     parameters: Type.Object({}),
     async execute() {
       const config = await client.getRobotConfig();
       return {
         content: [{ type: "text", text: JSON.stringify(config) }],
         details: config,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_command",
+    label: "Clawfinger Robot Command",
+    description:
+      "Send a command to the connected robot via Intercom transport. The robot must be connected (check clawfinger_robot_status first). Fire-and-forget commands (stop, safety_stop) return immediately; others wait for the robot's response.",
+    parameters: Type.Object({
+      command: Type.String({
+        description: "Command type (walk, stop, stand, sit, look, speak, pick_up, etc.)",
+      }),
+      params: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), {
+          description: "Command parameters (e.g., {speed: 0.3, direction: 'forward'})",
+        }),
+      ),
+    }),
+    async execute(
+      _id: string,
+      params: { command: string; params?: Record<string, unknown> },
+    ) {
+      // Send via WS bridge (robot_command message type)
+      const ackPromise = bridge.waitForAck("robot.command.ack", 15000);
+      bridge.sendRaw({
+        type: "robot_command",
+        command: {
+          type: params.command,
+          params: params.params || {},
+        },
+      });
+      const ack = await ackPromise;
+      if (!ack) {
+        return {
+          content: [{ type: "text", text: "Robot command timed out — no response from gateway." }],
+          details: { ok: false, error: "timeout" },
+        };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: ack.ok
+            ? `Command '${params.command}' sent. ${ack.detail || ""}`
+            : `Command failed: ${ack.error || "unknown error"}`,
+        }],
+        details: ack,
       };
     },
   });
@@ -404,6 +451,269 @@ export default function register(api: OpenClawPluginApi) {
       return {
         content: [{ type: "text", text: JSON.stringify(result) }],
         details: result,
+      };
+    },
+  });
+
+  // --- Robot skill + project tools ---
+
+  api.registerTool({
+    name: "clawfinger_robot_skill_list",
+    label: "Clawfinger Robot Skills",
+    description:
+      "List available robot skills (slow-path LLM knowledge and fast-path trained policies).",
+    parameters: Type.Object({}),
+    async execute() {
+      const skills = await client.listRobotSkills();
+      return {
+        content: [{ type: "text", text: JSON.stringify(skills, null, 2) }],
+        details: { skills },
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_skill_topic",
+    label: "Clawfinger Robot Skill Topic",
+    description:
+      "Read a robot skill topic's knowledge content (e.g., household_objects/common).",
+    parameters: Type.Object({
+      name: Type.String({ description: "Skill name (e.g., household_objects)" }),
+      topic: Type.String({ description: "Topic name (e.g., common)" }),
+    }),
+    async execute(_id: string, params: { name: string; topic: string }) {
+      const result = await client.getRobotSkillTopic(params.name, params.topic);
+      return {
+        content: [{ type: "text", text: result.content || JSON.stringify(result) }],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_project_status",
+    label: "Clawfinger Robot Project Status",
+    description:
+      "Get current robot project execution state (active, idle, steps, description).",
+    parameters: Type.Object({}),
+    async execute() {
+      const project = await client.getRobotProjectStatus();
+      return {
+        content: [{ type: "text", text: JSON.stringify(project, null, 2) }],
+        details: project,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_project_cancel",
+    label: "Clawfinger Robot Cancel Project",
+    description:
+      "Cancel the currently running robot project.",
+    parameters: Type.Object({}),
+    async execute() {
+      const result = await client.cancelRobotProject();
+      return {
+        content: [{ type: "text", text: result.message || JSON.stringify(result) }],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_takeover",
+    label: "Clawfinger Robot Takeover",
+    description:
+      "Take full control of the robot endpoint. User voice → transcript forwarded to you. Your replies are spoken on the robot speaker. Use clawfinger_robot_turn_wait and clawfinger_robot_turn_reply for the conversation loop.",
+    parameters: Type.Object({}),
+    async execute() {
+      const ok = await bridge.robotTakeover();
+      return {
+        content: [
+          { type: "text", text: ok ? "Robot takeover active. Use clawfinger_robot_turn_wait to receive voice input." : "Robot takeover failed." },
+        ],
+        details: { ok },
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_turn_wait",
+    label: "Clawfinger Robot Turn Wait",
+    description:
+      "Wait for user to speak to the robot during takeover. Returns transcript + request_id. You MUST call clawfinger_robot_turn_reply with this request_id.",
+    parameters: Type.Object({
+      timeout_ms: Type.Optional(
+        Type.Number({ description: "Timeout in ms (default: 30000)", default: 30000 }),
+      ),
+    }),
+    async execute(_id: string, params: { timeout_ms?: number }) {
+      const turn = await bridge.popRobotTurnRequest(params.timeout_ms || 30000);
+      if (!turn) {
+        return {
+          content: [
+            { type: "text", text: "No robot voice input within timeout. Call clawfinger_robot_turn_wait again or clawfinger_robot_release." },
+          ],
+        };
+      }
+      return {
+        content: [
+          { type: "text", text: `User said to robot: "${turn.transcript}"\n\nrequest_id: ${turn.request_id}\n\nCall clawfinger_robot_turn_reply with this request_id and your response.` },
+        ],
+        details: turn,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_turn_reply",
+    label: "Clawfinger Robot Turn Reply",
+    description:
+      "Send text reply (spoken on robot speaker) + optional robot commands. Then waits for the next voice input.",
+    parameters: Type.Object({
+      request_id: Type.String({ description: "request_id from turn_wait or previous turn_reply" }),
+      reply: Type.String({ description: "Text to speak on robot speaker" }),
+      commands: Type.Optional(
+        Type.Array(
+          Type.Record(Type.String(), Type.Unknown()),
+          { description: "Optional robot commands to execute alongside speech" },
+        ),
+      ),
+    }),
+    async execute(
+      _id: string,
+      params: { request_id: string; reply: string; commands?: Array<Record<string, unknown>> },
+    ) {
+      bridge.sendRobotTurnReply(params.request_id, params.reply, params.commands);
+
+      const next = await bridge.popRobotTurnRequest(45_000);
+      if (!next) {
+        return {
+          content: [
+            { type: "text", text: `Reply sent: "${params.reply}"\n\nNo next voice input within 45s. Call clawfinger_robot_turn_wait or clawfinger_robot_release.` },
+          ],
+        };
+      }
+      return {
+        content: [
+          { type: "text", text: `Reply sent: "${params.reply}"\n\nUser said to robot: "${next.transcript}"\n\nrequest_id: ${next.request_id}\n\nCall clawfinger_robot_turn_reply again.` },
+        ],
+        details: next,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_release",
+    label: "Clawfinger Robot Release",
+    description:
+      "Release robot control back to local LLM.",
+    parameters: Type.Object({}),
+    async execute() {
+      const ok = await bridge.robotRelease();
+      return {
+        content: [
+          { type: "text", text: ok ? "Robot released." : "Robot release failed." },
+        ],
+        details: { ok },
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_snapshot",
+    label: "Clawfinger Robot Snapshot",
+    description:
+      "Capture a single camera frame from the robot. Returns the image so the LLM can see what the robot sees.",
+    parameters: Type.Object({
+      source: Type.Optional(
+        Type.String({
+          description:
+            "Camera source ID (e.g. 'head_rgb', 'head_depth'). Defaults to first available camera.",
+        }),
+      ),
+    }),
+    async execute(
+      _id: string,
+      params: { source?: string },
+    ) {
+      const result = await client.robotSnapshot(params.source);
+      if (!result.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Snapshot failed: ${result.detail || "unknown error"}`,
+            },
+          ],
+          details: result,
+        };
+      }
+      const content: any[] = [];
+      if (result.image_base64) {
+        content.push({
+          type: "image",
+          data: result.image_base64,
+          mimeType: "image/jpeg",
+        });
+      }
+      content.push({
+        type: "text",
+        text: `Snapshot captured from ${result.source || "camera"} (${result.width}x${result.height}).`,
+      });
+      return { content, details: { ok: true, source: result.source } };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_robot_describe",
+    label: "Clawfinger Robot Describe Scene",
+    description:
+      "Capture a camera frame and run VLM scene description on the robot's Jetson. Returns the description text and optionally the image.",
+    parameters: Type.Object({
+      source: Type.Optional(
+        Type.String({
+          description: "Camera source ID. Defaults to first available camera.",
+        }),
+      ),
+      prompt: Type.Optional(
+        Type.String({
+          description:
+            "Prompt for the VLM (default: 'Describe what you see.')",
+        }),
+      ),
+    }),
+    async execute(
+      _id: string,
+      params: { source?: string; prompt?: string },
+    ) {
+      const result = await client.robotDescribe(params.source, params.prompt);
+      if (!result.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Describe failed: ${result.detail || "unknown error"}`,
+            },
+          ],
+          details: result,
+        };
+      }
+      const content: any[] = [];
+      if (result.image_base64) {
+        content.push({
+          type: "image",
+          data: result.image_base64,
+          mimeType: "image/jpeg",
+        });
+      }
+      content.push({
+        type: "text",
+        text: result.description || "(no description returned)",
+      });
+      return {
+        content,
+        details: { ok: true, source: result.source },
       };
     },
   });
@@ -483,6 +793,19 @@ export default function register(api: OpenClawPluginApi) {
     "/clawfinger instructions <text>              — set global LLM instructions",
     "/clawfinger instructions <session_id> <text> — set per-session instructions",
     "/clawfinger end <session_id>                 — mark a session as ended (hung up)",
+    "/clawfinger robot status                     — robot config, connection, transport state",
+    "/clawfinger robot command <type> [params]    — send robot command (e.g. walk, stop, look)",
+    "/clawfinger robot skills                     — list robot skills (slow + fast)",
+    "/clawfinger robot skill <name> <topic>       — read skill topic content",
+    "/clawfinger robot project                    — current project status",
+    "/clawfinger robot project cancel             — cancel running project",
+    "/clawfinger robot takeover                   — take control of robot",
+    "/clawfinger robot release                    — release robot control",
+    "/clawfinger robot perception                 — list perception sources (cameras, mics)",
+    "/clawfinger robot snapshot [source]          — capture camera snapshot",
+    "/clawfinger robot describe [source] [prompt] — VLM scene description",
+    "/clawfinger robot stream start|stop [source] — video stream control",
+    "/clawfinger robot audio start|stop [source]  — audio monitor control",
   ].join("\n");
 
   api.registerCommand({
@@ -631,6 +954,116 @@ export default function register(api: OpenClawPluginApi) {
             return { text: JSON.stringify(cfg, null, 2) };
           }
           return { text: "Usage: /clawfinger config call|tts|llm|robot" };
+        }
+
+        // --- robot status | robot command <type> [params] ---
+        if (action === "robot") {
+          const sub = (tokens[1] || "status").toLowerCase();
+          if (sub === "status") {
+            const cfg = await client.getRobotConfig();
+            return { text: JSON.stringify(cfg, null, 2) };
+          }
+          if (sub === "command") {
+            if (!tokens[2]) return { text: "Usage: /clawfinger robot command <type> [params_json]" };
+            const cmdType = tokens[2];
+            let cmdParams: Record<string, unknown> = {};
+            if (tokens[3]) {
+              try {
+                cmdParams = JSON.parse(tokens.slice(3).join(" "));
+              } catch {
+                // Try key=value pairs
+                cmdParams = {};
+                for (const t of tokens.slice(3)) {
+                  const [k, v] = t.split("=");
+                  if (k && v !== undefined) {
+                    cmdParams[k] = isNaN(Number(v)) ? v : Number(v);
+                  }
+                }
+              }
+            }
+            const ackPromise = bridge.waitForAck("robot.command.ack", 15000);
+            bridge.sendRaw({
+              type: "robot_command",
+              command: { type: cmdType, params: cmdParams },
+            });
+            const ack = await ackPromise;
+            if (!ack) return { text: `Robot command '${cmdType}' timed out.` };
+            return { text: ack.ok ? `OK: ${ack.detail || "sent"}` : `Failed: ${ack.error || "unknown"}` };
+          }
+          if (sub === "skills") {
+            const skills = await client.listRobotSkills();
+            if (!skills.length) return { text: "No robot skills loaded." };
+            const lines = skills.map((s: any) =>
+              `  ${s.name} (${s.execution_mode})${s.status === "coming_soon" ? " [coming soon]" : ""}: ${s.description}`
+            );
+            return { text: `Robot skills (${skills.length}):\n${lines.join("\n")}` };
+          }
+          if (sub === "skill") {
+            if (!tokens[2] || !tokens[3]) return { text: "Usage: /clawfinger robot skill <name> <topic>" };
+            const result = await client.getRobotSkillTopic(tokens[2], tokens[3]);
+            return { text: result.content || `Topic not found: ${tokens[2]}/${tokens[3]}` };
+          }
+          if (sub === "project") {
+            const subSub = (tokens[2] || "").toLowerCase();
+            if (subSub === "cancel") {
+              const result = await client.cancelRobotProject();
+              return { text: result.message || JSON.stringify(result) };
+            }
+            const project = await client.getRobotProjectStatus();
+            return { text: JSON.stringify(project, null, 2) };
+          }
+          if (sub === "takeover") {
+            const ok = await bridge.robotTakeover();
+            return { text: ok ? "Robot takeover active." : "Robot takeover failed." };
+          }
+          if (sub === "release") {
+            const ok = await bridge.robotRelease();
+            return { text: ok ? "Robot released." : "Robot release failed." };
+          }
+          if (sub === "perception") {
+            const sources = await client.robotPerceptionSources();
+            return { text: JSON.stringify(sources, null, 2) };
+          }
+          if (sub === "snapshot") {
+            const source = tokens[2] || undefined;
+            const result = await client.robotSnapshot(source);
+            if (!result.ok) return { text: `Snapshot failed: ${result.detail || "unknown"}` };
+            return { text: `Snapshot captured from ${result.source} (${result.width}x${result.height}).` };
+          }
+          if (sub === "describe") {
+            const source = tokens[2] || undefined;
+            const prompt = tokens.slice(3).join(" ") || undefined;
+            const result = await client.robotDescribe(source, prompt);
+            if (!result.ok) return { text: `Describe failed: ${result.detail || "unknown"}` };
+            return { text: result.description || "(no description)" };
+          }
+          if (sub === "stream") {
+            const subSub = (tokens[2] || "").toLowerCase();
+            const source = tokens[3] || undefined;
+            if (subSub === "start") {
+              const result = await client.robotStreamStart(source);
+              return { text: result.ok ? `Stream started: ${result.source}` : `Failed: ${result.detail || "error"}` };
+            }
+            if (subSub === "stop") {
+              const result = await client.robotStreamStop(source);
+              return { text: result.ok ? `Stream stopped: ${result.source}` : `Failed: ${result.detail || "error"}` };
+            }
+            return { text: "Usage: /clawfinger robot stream start|stop [source]" };
+          }
+          if (sub === "audio") {
+            const subSub = (tokens[2] || "").toLowerCase();
+            const source = tokens[3] || undefined;
+            if (subSub === "start") {
+              const result = await client.robotAudioMonitorStart(source);
+              return { text: result.ok ? `Audio monitor started: ${result.source}` : `Failed: ${result.detail || "error"}` };
+            }
+            if (subSub === "stop") {
+              const result = await client.robotAudioMonitorStop(source);
+              return { text: result.ok ? `Audio monitor stopped: ${result.source}` : `Failed: ${result.detail || "error"}` };
+            }
+            return { text: "Usage: /clawfinger robot audio start|stop [source]" };
+          }
+          return { text: "Usage: /clawfinger robot status|command|skills|skill|project|takeover|release|perception|snapshot|describe|stream|audio" };
         }
 
         // --- instructions <session_id> <text> ---

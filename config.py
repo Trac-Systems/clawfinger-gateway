@@ -30,6 +30,9 @@ _FLAT_TO_NESTED: dict[str, str] = {
     "piper_noise_scale": "tts.piper.noise_scale",
     "piper_noise_w": "tts.piper.noise_w",
     "piper_sentence_silence": "tts.piper.sentence_silence",
+    "mlx_audio_tts_base": "tts.mlx_audio_base",
+    "tts_ref_audio": "tts.ref_audio",
+    "tts_ref_text": "tts.ref_text",
     "llm_model": "llm.model",
     "llm_base_url": "llm.base_url",
     "llm_api_key": "llm.api_key",
@@ -173,7 +176,7 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
     # ASR defaults
     asr = cfg.setdefault("asr", {})
     asr.setdefault("backend", "http://127.0.0.1:8765")
-    asr.setdefault("model", "mlx-community/parakeet-tdt-0.6b-v2")
+    asr.setdefault("model", "mlx-community/parakeet-tdt-0.6b-v3")
     asr.setdefault("language", "en")
 
     # TTS defaults
@@ -182,6 +185,9 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
     tts.setdefault("voice", "am_adam")
     tts.setdefault("speed", 1.2)
     tts.setdefault("lang", "en")
+    tts.setdefault("mlx_audio_base", "")
+    tts.setdefault("ref_audio", "")
+    tts.setdefault("ref_text", "")
     piper = tts.setdefault("piper", {})
     piper.setdefault("base", "http://127.0.0.1:5123")
     piper.setdefault("voice", "thorsten-high")
@@ -193,11 +199,11 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
 
     # LLM defaults
     llm = cfg.setdefault("llm", {})
-    llm.setdefault("model", "")
+    llm.setdefault("model", "mlx-community/Qwen3-4B-Instruct-2507-4bit")
     llm.setdefault("base_url", "")
     llm.setdefault("api_key", "")
-    llm.setdefault("max_tokens", 400)
-    llm.setdefault("temperature", 0.2)
+    llm.setdefault("max_tokens", 80)
+    llm.setdefault("temperature", 0.25)
     llm.setdefault("top_p", 1.0)
     llm.setdefault("top_p_enabled", True)
     llm.setdefault("top_k", 0)
@@ -242,6 +248,32 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
     robot.setdefault("offline_mode", "complete_task")
     robot.setdefault("voice", "am_adam")
     robot.setdefault("voice_lang", "en")
+    robot.setdefault("voice_speed", 1.0)
+    robot.setdefault("wake_word", "Robert")
+    robot.setdefault("wake_phrases", ["hey {name}", "hi {name}", "ok {name}", "listen {name}", "{name}"])
+    robot.setdefault("wake_word_timeout", 30)
+    robot.setdefault("wake_word_model", "")
+    safety = robot.setdefault("safety", {})
+    safety.setdefault("max_speed", 0.3)
+    safety.setdefault("max_grasp_force", 0.8)
+    safety.setdefault("max_reach_m", 0.6)
+    safety.setdefault("blocked_commands", [])
+    robot.setdefault("sc_bridge_port", 49222)
+    robot.setdefault("intercom_channel", "clawfinger-robot-g1")
+    robot.setdefault("pear_path", "")
+    camera = robot.setdefault("camera", {})
+    camera.setdefault("width", 640)
+    camera.setdefault("height", 480)
+    camera.setdefault("quality", 50)
+    camera.setdefault("stream_fps", 5)
+    audio_monitor = robot.setdefault("audio_monitor", {})
+    audio_monitor.setdefault("sample_rate", 16000)
+    audio_monitor.setdefault("channels", 1)
+    audio_monitor.setdefault("chunk_ms", 100)
+    intercom_limits = robot.setdefault("intercom_limits", {})
+    intercom_limits.setdefault("max_message_kb", 256)
+    intercom_limits.setdefault("pow", 0)
+    intercom_limits.setdefault("rate_limit", 0)
     g1 = robot.setdefault("unitree_g1", {})
     g1.setdefault("jetson_ip", "192.168.123.164")
     g1.setdefault("locomotion_ip", "192.168.123.161")

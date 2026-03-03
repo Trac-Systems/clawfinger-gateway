@@ -475,11 +475,18 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
     <div class="panel-head">Perception</div>
     <div class="panel-body">
       <div class="row">
-        <button class="secondary" onclick="robotSnapshot()" disabled>Snapshot</button>
-        <button class="secondary" onclick="robotDescribe()" disabled>Describe Scene</button>
+        <select id="robot-camera-source" disabled style="font-size:12px;flex:1">
+          <option value="">No cameras</option>
+        </select>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <button class="secondary" onclick="robotSnapshot()" id="btn-robot-snapshot" disabled>Snapshot</button>
+        <button class="secondary" onclick="robotDescribe()" id="btn-robot-describe" disabled>Describe</button>
+        <button class="secondary" onclick="toggleVideoStream()" id="btn-video-stream" disabled>Stream</button>
       </div>
       <div id="robot-camera" style="margin-top:8px;min-height:120px;background:var(--bg3);border-radius:4px;display:flex;align-items:center;justify-content:center">
-        <span class="empty">No camera feed</span>
+        <img id="robot-camera-img" style="display:none;max-width:100%;border-radius:4px" />
+        <span id="robot-camera-placeholder" class="empty">No camera feed</span>
       </div>
       <div id="robot-scene-desc" style="margin-top:8px;font-size:12px;color:var(--fg2)"></div>
     </div>
@@ -495,6 +502,14 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
         <button onclick="robotSpeak()" disabled>Speak</button>
       </div>
       <hr style="border-color:var(--border);margin:12px 0">
+      <label style="font-size:12px;color:var(--fg2)">Audio Monitor:</label>
+      <div class="row" style="margin-top:4px">
+        <button class="secondary" onclick="toggleAudioMonitor()" id="btn-audio-monitor" disabled>Start Listening</button>
+      </div>
+      <div id="robot-audio-viz" style="height:24px;background:var(--bg3);border-radius:4px;overflow:hidden;margin-top:4px">
+        <div id="robot-audio-bar" style="height:100%;width:0%;background:var(--green);transition:width 0.1s"></div>
+      </div>
+      <hr style="border-color:var(--border);margin:12px 0">
       <label style="font-size:12px;color:var(--fg2)">Last heard:</label>
       <div id="robot-last-heard" class="empty">--</div>
     </div>
@@ -508,8 +523,8 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
         <tr><td>IMU Roll</td><td id="robot-imu-roll">--</td></tr>
         <tr><td>IMU Pitch</td><td id="robot-imu-pitch">--</td></tr>
         <tr><td>IMU Yaw</td><td id="robot-imu-yaw">--</td></tr>
-        <tr><td>Left Gripper</td><td id="robot-gripper-l">--</td></tr>
-        <tr><td>Right Gripper</td><td id="robot-gripper-r">--</td></tr>
+        <tr id="sensor-gripper-row-l"><td>Left Gripper</td><td id="robot-gripper-l">--</td></tr>
+        <tr id="sensor-gripper-row-r"><td>Right Gripper</td><td id="robot-gripper-r">--</td></tr>
       </table>
     </div>
   </div>
@@ -637,6 +652,20 @@ function handleEvent(evt) {
     addMonitorLine(`[dial] ${d.number}`, 'meta');
   } else if (t === 'call.hangup') {
     addMonitorLine(`[hangup] Call ended${d.session_id ? ' (session ' + d.session_id.slice(0,8) + ')' : ''}`, 'meta');
+  } else if (t === 'robot.snapshot') {
+    if (d.image_base64) showCameraImage(d.image_base64);
+  } else if (t === 'robot.audio_chunk') {
+    if (audioMonitoring) playAudioChunk(d.audio_base64, d.sample_rate);
+  } else if (t === 'robot.camera.stream_stopped') {
+    stopVideoStream();
+  } else if (t === 'robot.audio.monitor_stopped') {
+    stopAudioMonitor();
+  } else if (t === 'robot.connected') {
+    loadRobotConfig();
+  } else if (t === 'robot.disconnected') {
+    setRobotDisconnected();
+  } else if (t === 'robot.scene_description') {
+    document.getElementById('robot-scene-desc').textContent = d.description || '';
   }
 }
 
@@ -1218,13 +1247,17 @@ function switchView(view) {
   });
 }
 
-// Robot placeholder functions
+// --- Robot functions ---
+let videoStreaming = false;
+let audioMonitoring = false;
+let audioCtx = null;
+let audioNextTime = 0;
+let robotCaps = new Set();
+
 function submitRobotTask() {}
 function robotCmd() {}
-function robotSnapshot() {}
-function robotDescribe() {}
-function robotSpeak() {}
 function updateRobotModel() {}
+
 function saveRobotConfig() {
   fetch('/api/config/robot', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
@@ -1235,7 +1268,223 @@ function saveRobotConfig() {
   });
 }
 
-// Load robot config on page load
+async function robotSnapshot() {
+  const source = document.getElementById('robot-camera-source').value;
+  const btn = document.getElementById('btn-robot-snapshot');
+  btn.disabled = true;
+  btn.textContent = 'Capturing...';
+  try {
+    const r = await fetch('/api/robot/camera/snapshot', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(source ? {source} : {})
+    });
+    const d = await r.json();
+    if (d.ok && d.image_base64) showCameraImage(d.image_base64);
+  } catch(e) { console.error('Snapshot failed:', e); }
+  btn.textContent = 'Snapshot';
+  btn.disabled = false;
+}
+
+async function robotDescribe() {
+  const source = document.getElementById('robot-camera-source').value;
+  const btn = document.getElementById('btn-robot-describe');
+  btn.disabled = true;
+  btn.textContent = 'Thinking...';
+  const descEl = document.getElementById('robot-scene-desc');
+  try {
+    const r = await fetch('/api/robot/camera/describe', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(source ? {source} : {})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      descEl.textContent = d.description || '(no description)';
+      if (d.image_base64) showCameraImage(d.image_base64);
+    } else {
+      descEl.textContent = 'Error: ' + (d.detail || 'failed');
+    }
+  } catch(e) { descEl.textContent = 'Error: ' + e.message; }
+  btn.textContent = 'Describe';
+  btn.disabled = false;
+}
+
+async function toggleVideoStream() {
+  const btn = document.getElementById('btn-video-stream');
+  const source = document.getElementById('robot-camera-source').value;
+  if (videoStreaming) {
+    await fetch('/api/robot/camera/stream/stop', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(source ? {source} : {})
+    });
+    stopVideoStream();
+  } else {
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    try {
+      const r = await fetch('/api/robot/camera/stream/start', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(source ? {source} : {})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        videoStreaming = true;
+        btn.textContent = 'Stop';
+        btn.disabled = false;
+        const img = document.getElementById('robot-camera-img');
+        const ph = document.getElementById('robot-camera-placeholder');
+        const bearer = ''; // MJPEG auth via query param if needed
+        const streamSource = d.source || source;
+        img.src = `/api/robot/camera/stream?source=${encodeURIComponent(streamSource)}`;
+        img.style.display = '';
+        ph.style.display = 'none';
+      }
+    } catch(e) { console.error('Stream start failed:', e); }
+    btn.disabled = false;
+    if (!videoStreaming) btn.textContent = 'Stream';
+  }
+}
+
+function stopVideoStream() {
+  videoStreaming = false;
+  const btn = document.getElementById('btn-video-stream');
+  btn.textContent = 'Stream';
+  const img = document.getElementById('robot-camera-img');
+  img.src = '';
+  img.style.display = 'none';
+  document.getElementById('robot-camera-placeholder').style.display = '';
+}
+
+async function toggleAudioMonitor() {
+  const btn = document.getElementById('btn-audio-monitor');
+  if (audioMonitoring) {
+    await fetch('/api/robot/audio/monitor/stop', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({})
+    });
+    stopAudioMonitor();
+  } else {
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    try {
+      const r = await fetch('/api/robot/audio/monitor/start', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        audioMonitoring = true;
+        btn.textContent = 'Stop Listening';
+        if (!audioCtx) audioCtx = new AudioContext({sampleRate: 16000});
+        audioNextTime = 0;
+      }
+    } catch(e) { console.error('Audio monitor start failed:', e); }
+    btn.disabled = false;
+    if (!audioMonitoring) btn.textContent = 'Start Listening';
+  }
+}
+
+function stopAudioMonitor() {
+  audioMonitoring = false;
+  document.getElementById('btn-audio-monitor').textContent = 'Start Listening';
+  document.getElementById('robot-audio-bar').style.width = '0%';
+}
+
+function playAudioChunk(base64Data, sampleRate) {
+  if (!audioCtx) audioCtx = new AudioContext({sampleRate: sampleRate || 16000});
+  const raw = atob(base64Data);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const int16 = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(int16.length);
+  let peak = 0;
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768.0;
+    peak = Math.max(peak, Math.abs(float32[i]));
+  }
+  document.getElementById('robot-audio-bar').style.width = Math.min(100, peak * 200) + '%';
+  const buffer = audioCtx.createBuffer(1, float32.length, sampleRate || 16000);
+  buffer.getChannelData(0).set(float32);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  if (audioNextTime < now) audioNextTime = now;
+  src.start(audioNextTime);
+  audioNextTime += buffer.duration;
+}
+
+function showCameraImage(base64Data) {
+  const img = document.getElementById('robot-camera-img');
+  const ph = document.getElementById('robot-camera-placeholder');
+  img.src = 'data:image/jpeg;base64,' + base64Data;
+  img.style.display = '';
+  ph.style.display = 'none';
+}
+
+function robotSpeak() {}
+
+async function loadPerceptionSources() {
+  try {
+    const r = await fetch('/api/robot/perception');
+    const d = await r.json();
+    const sel = document.getElementById('robot-camera-source');
+    sel.innerHTML = '';
+    const cameras = d.cameras || [];
+    if (cameras.length === 0) {
+      sel.innerHTML = '<option value="">No cameras</option>';
+      sel.disabled = true;
+    } else {
+      cameras.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.description || c.id;
+        sel.appendChild(opt);
+      });
+      sel.disabled = false;
+    }
+  } catch(e) { console.error('Failed to load perception sources:', e); }
+}
+
+function updateRobotCapabilities(cfg) {
+  const caps = new Set(cfg.capabilities || []);
+  robotCaps = caps;
+  const connected = cfg.connected;
+  // Vision
+  const hasVision = caps.has('vision') && connected;
+  document.getElementById('btn-robot-snapshot').disabled = !hasVision;
+  document.getElementById('btn-robot-describe').disabled = !hasVision;
+  document.getElementById('btn-video-stream').disabled = !hasVision;
+  document.getElementById('robot-camera-source').disabled = !hasVision;
+  if (hasVision) loadPerceptionSources();
+  // Audio monitoring
+  const hasAudio = caps.has('audio') && connected;
+  document.getElementById('btn-audio-monitor').disabled = !hasAudio;
+  // Manipulation — gripper rows
+  const hasManip = caps.has('manipulation') || caps.has('dexterous_hands');
+  const gripL = document.getElementById('sensor-gripper-row-l');
+  const gripR = document.getElementById('sensor-gripper-row-r');
+  if (gripL) gripL.style.display = hasManip ? '' : 'none';
+  if (gripR) gripR.style.display = hasManip ? '' : 'none';
+  // Movement buttons
+  document.querySelectorAll('[data-cap="locomotion"]').forEach(
+    el => el.disabled = !(caps.has('locomotion') && connected));
+}
+
+function setRobotDisconnected() {
+  document.getElementById('robot-conn-badge').textContent = 'Disconnected';
+  document.getElementById('robot-conn-badge').style.background = 'rgba(248,81,73,0.2)';
+  document.getElementById('robot-conn-badge').style.color = 'var(--red)';
+  document.getElementById('robot-status').textContent = 'Not connected';
+  // Disable all perception controls
+  document.getElementById('btn-robot-snapshot').disabled = true;
+  document.getElementById('btn-robot-describe').disabled = true;
+  document.getElementById('btn-video-stream').disabled = true;
+  document.getElementById('btn-audio-monitor').disabled = true;
+  document.getElementById('robot-camera-source').disabled = true;
+  stopVideoStream();
+  stopAudioMonitor();
+}
+
 function loadRobotConfig() {
   fetch('/api/config/robot').then(r => r.json()).then(d => {
     document.getElementById('robot-model').textContent = d.model || '--';
@@ -1245,7 +1494,10 @@ function loadRobotConfig() {
       document.getElementById('robot-conn-badge').textContent = 'Connected';
       document.getElementById('robot-conn-badge').style.background = 'rgba(63,185,80,0.2)';
       document.getElementById('robot-conn-badge').style.color = 'var(--green)';
+    } else {
+      setRobotDisconnected();
     }
+    updateRobotCapabilities(d);
   }).catch(() => {});
 }
 

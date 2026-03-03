@@ -5,13 +5,13 @@
 
   "asr": {
     "backend": "http://127.0.0.1:8765",
-    "model": "mlx-community/parakeet-tdt-0.6b-v2",
+    "model": "mlx-community/parakeet-tdt-0.6b-v3",
     "language": "en"
   },
 
   "tts": {
     "model": "mlx-community/Kokoro-82M-bf16",
-    "voice": "af_heart",
+    "voice": "am_adam",
     "speed": 1.2,
     "lang": "en",
     "piper": {
@@ -26,11 +26,11 @@
   },
 
   "llm": {
-    "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
     "base_url": "",
     "api_key": "",
-    "max_tokens": 400,
-    "temperature": 0.2,
+    "max_tokens": 80,
+    "temperature": 0.25,
     "top_p": 1.0,
     "top_p_enabled": true,
     "top_k": 0,
@@ -66,6 +66,9 @@
     "model": "unitree_g1",
     "transport": "intercom",
     "intercom_key": "",
+    "sc_bridge_port": 49222,
+    "intercom_channel": "clawfinger-robot-g1",
+    "pear_path": "",
     "heartbeat_interval": 5,
     "disconnect_timeout": 15,
     "disconnect_debounce": 3,
@@ -73,6 +76,33 @@
     "offline_mode": "complete_task",
     "voice": "am_adam",
     "voice_lang": "en",
+    "voice_speed": 1.0,
+    "wake_word": "Robert",
+    "wake_phrases": ["hey {name}", "hi {name}", "ok {name}", "listen {name}", "{name}"],
+    "wake_word_timeout": 30,
+    "wake_word_model": "",
+    "safety": {
+      "max_speed": 0.3,
+      "max_grasp_force": 0.8,
+      "max_reach_m": 0.6,
+      "blocked_commands": []
+    },
+    "camera": {
+      "width": 640,
+      "height": 480,
+      "quality": 50,
+      "stream_fps": 5
+    },
+    "audio_monitor": {
+      "sample_rate": 16000,
+      "channels": 1,
+      "chunk_ms": 100
+    },
+    "intercom_limits": {
+      "max_message_kb": 256,
+      "pow": 0,
+      "rate_limit": 0
+    },
     "unitree_g1": {
       "jetson_ip": "192.168.123.164",
       "locomotion_ip": "192.168.123.161",

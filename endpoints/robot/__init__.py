@@ -7,6 +7,27 @@ from typing import Any
 # Capability registry: populated by each model's __init__.py at import time
 _MODELS: dict[str, dict[str, Any]] = {}
 
+# Transport layer — set by app.py startup when Intercom is active
+_TRANSPORT: Any = None  # IntercomBridge instance
+
+
+def set_transport(transport: Any) -> None:
+    """Set the active transport (IntercomBridge) for robot communication."""
+    global _TRANSPORT
+    _TRANSPORT = transport
+
+
+def get_transport() -> Any:
+    """Get the active transport, or None if not connected."""
+    return _TRANSPORT
+
+
+def set_connected(model_name: str, connected: bool) -> None:
+    """Update connection status for a registered model."""
+    model = _MODELS.get(model_name)
+    if model:
+        model["connected"] = connected
+
 
 def register_model(
     name: str,
@@ -42,6 +63,14 @@ def get_capabilities(model_name: str) -> set[str]:
 def has_capability(model_name: str, capability: str) -> bool:
     """Check if a model supports a given capability."""
     return capability in get_capabilities(model_name)
+
+
+def get_perception(model_name: str) -> dict:
+    """Get perception sources (cameras, mics) for a model. Returns empty dict if none."""
+    model = _MODELS.get(model_name)
+    if not model:
+        return {}
+    return model.get("defaults", {}).get("perception", {})
 
 
 async def dispatch_command(model_name: str, command: dict) -> dict:
@@ -80,13 +109,26 @@ _COMMAND_CAPABILITIES = {
     "pick_up": "manipulation",
     "place": "manipulation",
     "hand_over": "manipulation",
+    "reach": "manipulation",
+    "pour": "manipulation",
+    "grasp": "dexterous_hands",
+    "release": "dexterous_hands",
     "wave": "gesture",
     "point": "gesture",
     "nod": "gesture",
+    "thumbs_up": "gesture",
+    "shake_head": "gesture",
     "look": "vision",
     "snapshot": "vision",
+    "detect_object": "vision",
+    "camera_snapshot": "vision",
+    "camera_stream_start": "vision",
+    "camera_stream_stop": "vision",
+    "camera_describe": "vision",
     "speak": "audio",
     "listen": "audio",
+    "audio_monitor_start": "audio",
+    "audio_monitor_stop": "audio",
 }
 
 

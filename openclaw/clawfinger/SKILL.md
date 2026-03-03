@@ -70,9 +70,16 @@ In `~/.openclaw/openclaw.json`:
 | `clawfinger_call_config_get` | Read call policy settings |
 | `clawfinger_call_config_set` | Update call policy settings |
 
+## Robot Perception Tools
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_robot_snapshot` | Capture a camera frame from the robot. Params: `source?`, `width?`, `height?`, `quality?`. Returns image. |
+| `clawfinger_robot_describe` | VLM scene description from robot camera. Params: `source?`, `prompt?`. Returns text. |
+
 ## Slash Commands
 
-`/clawfinger status`, `/clawfinger dial <number>`, `/clawfinger hangup`, `/clawfinger inject <text>`, `/clawfinger takeover <sid>`, `/clawfinger release <sid>`, `/clawfinger end <sid>`, `/clawfinger context get|set|clear <sid>`, `/clawfinger config call|tts|llm`, `/clawfinger instructions <text>`.
+`/clawfinger status`, `/clawfinger dial <number>`, `/clawfinger hangup`, `/clawfinger inject <text>`, `/clawfinger takeover <sid>`, `/clawfinger release <sid>`, `/clawfinger end <sid>`, `/clawfinger context get|set|clear <sid>`, `/clawfinger config call|tts|llm`, `/clawfinger instructions <text>`, `/clawfinger robot perception`, `/clawfinger robot snapshot [source]`, `/clawfinger robot describe [source] [prompt]`, `/clawfinger robot stream start|stop [source]`, `/clawfinger robot audio start|stop [source]`.
 
 ## Related Skills
 

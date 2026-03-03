@@ -195,6 +195,37 @@ curl -s -X POST "$GW/api/config/tts" \
 curl -s "$GW/api/config/tts" | jq '.voices'
 ```
 
+### Switch to German TTS (Piper Thorsten)
+
+```bash
+# Switch language to German — routes TTS through Piper sidecar on :5123
+curl -s -X POST "$GW/api/config/tts" \
+  -H "Content-Type: application/json" \
+  -d '{"lang": "de"}' | jq .
+
+# Configure Piper voice parameters
+curl -s -X POST "$GW/api/config/tts" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "lang": "de",
+    "piper_voice": "thorsten-high",
+    "piper_length_scale": 1.0,
+    "piper_noise_scale": 0.667,
+    "piper_noise_w": 0.8,
+    "piper_sentence_silence": 0.2
+  }' | jq .
+```
+
+Available Piper voices: `thorsten-high`, `thorsten-medium`, `thorsten-low`, `karlsson-low`, `pavoque-low`, `eva_k-x_low`, `kerstin-low`, `ramona-low`, `thorsten_emotional-medium`.
+
+### Switch back to English TTS (Kokoro)
+
+```bash
+curl -s -X POST "$GW/api/config/tts" \
+  -H "Content-Type: application/json" \
+  -d '{"lang": "en", "voice": "am_adam", "speed": 1.2}' | jq .
+```
+
 ### Adjust LLM parameters
 
 ```bash
@@ -259,14 +290,18 @@ curl -s -X POST "$GW/api/session/reset" \
 
 ## Robot Operations
 
-### Read robot config
+### Read robot config + transport status
 
 ```bash
 curl -s "$GW/api/config/robot" | jq '{
   enabled: .enabled,
   model: .model,
   connected: .connected,
-  capabilities: .capabilities
+  capabilities: .capabilities,
+  transport: .transport,
+  transport_connected: .transport_connected,
+  intercom_running: .intercom_running,
+  intercom_channel: .intercom_channel
 }'
 ```
 
@@ -280,17 +315,78 @@ curl -s -X POST "$GW/api/config/robot" \
 
 **Security keys** (`intercom_key`, `safety_stop_on_disconnect`, `enable_low_level`) cannot be set via the API from agents — only from the control center.
 
-### Check robot status (future — when Intercom transport is built)
+### Check Intercom process health
 
 ```bash
-curl -s "$GW/api/robot/status" | jq '{
-  connected: .connected,
-  battery: .battery,
-  pose: .pose,
-  current_task: .current_task,
-  model: .model,
-  capabilities: .capabilities
+# Transport info is included in /api/config/robot
+curl -s "$GW/api/config/robot" | jq '{
+  transport: .transport,
+  transport_connected: .transport_connected,
+  intercom_running: .intercom_running,
+  channel: .intercom_channel,
+  connected: .connected
 }'
+```
+
+## Robot Perception
+
+### List available cameras and mics
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/perception" | jq .
+```
+
+### Capture a camera snapshot
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/camera/snapshot" \
+  -d '{"source": "head_rgb", "width": 640, "height": 480}' --output snapshot.jpg
+```
+
+### VLM scene description
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/camera/describe" \
+  -d '{"source": "head_rgb", "prompt": "What objects are on the table?"}' | jq .
+```
+
+### Start/stop video stream
+
+```bash
+# Start stream
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/camera/stream/start" \
+  -d '{"source": "head_rgb", "fps": 10, "width": 320, "height": 240}' | jq .
+
+# View MJPEG stream (e.g., in browser or ffplay)
+# GET $GW/api/robot/camera/stream?source=head_rgb&token=$TOKEN
+
+# Stop stream
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/camera/stream/stop" \
+  -d '{"source": "head_rgb"}' | jq .
+```
+
+### Start/stop audio monitoring
+
+```bash
+# Start mic monitoring
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/audio/monitor/start" \
+  -d '{"source": "head_mic", "sample_rate": 16000, "channels": 1}' | jq .
+
+# Stop mic monitoring
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/audio/monitor/stop" \
+  -d '{"source": "head_mic"}' | jq .
 ```
 
 ## Combining with OpenClaw Skills
@@ -304,3 +400,21 @@ These REST operations can be composed into OpenClaw skills for more complex auto
 - **Robot monitoring**: Periodic robot status checks, battery alerts, disconnect detection
 
 For real-time event-driven automation (reacting to `turn.complete`, `agent.takeover`, `robot.connected`, etc.), use the [OpenClaw Clawfinger Plugin](../openclaw-clawfinger/SKILL.md) which provides a persistent WebSocket bridge.
+
+---
+
+## Robot Skill & Project Operations
+
+```bash
+# List robot skills
+curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/skills" | jq '.[] | {name, execution_mode, description}'
+
+# Read a skill topic
+curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/skills/household_objects/common"
+
+# Check project status
+curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/project" | jq '{status, description, step, max_steps}'
+
+# Cancel running project
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$GW/api/robot/project/cancel" | jq .
+```
