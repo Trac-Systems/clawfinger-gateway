@@ -139,17 +139,18 @@ During takeover, if you fail to reply within 30 seconds, the gateway falls back 
 4. clawfinger_context_set       -> push context for the LLM
 ```
 
-## Robot Tools (requires robot connection)
+## Robot Tools
 
-These tools interact with the robot endpoint. They require `robot.enabled: true` and an active robot connection. All tools are capability-gated — they return an error if the connected robot doesn't support the required capability.
+These tools interact with the robot endpoint via Intercom P2P transport. `clawfinger_robot_status` works always (shows transport state even when disconnected). Command tools require `robot.enabled: true` and an active robot connection.
 
-| Tool | Capability | Description |
-|------|-----------|-------------|
-| `clawfinger_robot_status` | (all) | Robot status: battery, pose, connectivity, model, current task |
-| `clawfinger_robot_config_get` | (all) | Read robot config (shared + model-specific) |
-| `clawfinger_robot_config_set` | (all) | Update robot config (security keys blocked from agents) |
+| Tool | Description |
+|------|-------------|
+| `clawfinger_robot_status` | Robot status: connection state, transport info, model, capabilities. Works even when robot is disconnected. |
+| `clawfinger_robot_command` | Send a command to the connected robot via Intercom transport. Supports all G1 capabilities (walk, stop, look, speak, etc.). |
+| `clawfinger_robot_config_get` | Read robot config (shared + model-specific) |
+| `clawfinger_robot_config_set` | Update robot config (security keys blocked from agents) |
 
-### Future robot tools (when Intercom transport is built)
+### Future robot tools
 
 | Tool | Capability | Description |
 |------|-----------|-------------|
@@ -178,9 +179,9 @@ The plugin shares a single WS bridge for both phone and robot commands.
 1. clawfinger_dial +49123456789              (phone)
 2. clawfinger_takeover <sid>                 (phone)
 3. clawfinger_turn_wait                      (phone — caller speaks)
-4. clawfinger_robot_task "get package"       (robot — async)
+4. clawfinger_robot_command walk {speed: 0.3} (robot — dispatched via Intercom)
 5. clawfinger_turn_reply "I've sent the robot to get your package"
-6. clawfinger_robot_task_status <task_id>    (check between turns)
+6. clawfinger_robot_status                   (check transport state between turns)
 ```
 
 ## Slash Command
@@ -209,3 +210,55 @@ All gateway operations are also available as direct `/clawfinger` subcommands th
 | `/clawfinger instructions <text>` | Set global LLM system instructions |
 | `/clawfinger instructions <session_id> <text>` | Set per-session LLM instructions |
 | `/clawfinger end <session_id>` | Mark a session as ended (hung up) |
+
+---
+
+## Robot Skill & Project Tools
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_robot_skill_list` | List available robot skills (slow + fast path) |
+| `clawfinger_robot_skill_topic` | Read a skill topic's knowledge content |
+| `clawfinger_robot_project_status` | Current project execution state |
+| `clawfinger_robot_project_cancel` | Cancel running robot project |
+
+## Robot Takeover Tools
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_robot_takeover` | Take full control of robot (voice + commands) |
+| `clawfinger_robot_turn_wait` | Wait for user to speak to robot during takeover |
+| `clawfinger_robot_turn_reply` | Send text reply (spoken on robot) + optional commands |
+| `clawfinger_robot_release` | Release robot control back to local LLM |
+
+### Robot Takeover Workflow
+
+```
+1. clawfinger_robot_takeover              → take control
+2. clawfinger_robot_turn_wait             → user speaks to robot
+3. clawfinger_robot_turn_reply            → agent text spoken on robot + optional commands
+   (repeat 2-3)
+4. clawfinger_robot_release               → hand back to local LLM
+```
+
+### Robot Slash Commands
+
+```
+/clawfinger robot skills              — list robot skills
+/clawfinger robot skill <name> <topic> — read skill topic
+/clawfinger robot project             — current project status
+/clawfinger robot project cancel      — cancel running project
+/clawfinger robot takeover            — take control of robot
+/clawfinger robot release             — release robot control
+```
+
+### Robot Events
+
+| Event | When |
+|-------|------|
+| `robot.project.started` | Project initiated from voice |
+| `robot.project.step` | Each autonomous action |
+| `robot.project.completed` | Project done |
+| `robot.project.failed` | Timeout, disconnect, abort |
+| `robot.project.cancelled` | User "stop" or API cancel |
+| `robot.skill.loaded` | Skill topic loaded into context |

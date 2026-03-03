@@ -92,9 +92,9 @@ source .venv/bin/activate
 python3 -c "
 from huggingface_hub import snapshot_download
 for repo in [
-    'mlx-community/parakeet-tdt-0.6b-v2',
+    'mlx-community/parakeet-tdt-0.6b-v3',
     'mlx-community/Kokoro-82M-bf16',
-    'mlx-community/Qwen2.5-1.5B-Instruct-4bit',
+    'mlx-community/Qwen3-4B-Instruct-2507-4bit',
 ]:
     print(f'Downloading {repo}...')
     snapshot_download(repo)
@@ -112,10 +112,10 @@ curl -L -o voices/de_DE-thorsten-high.onnx.json \
 **Models:**
 | Model | Purpose | Size | Notes |
 |-------|---------|------|-------|
-| `mlx-community/parakeet-tdt-0.6b-v2` | ASR (speech-to-text) | 2.3 GB | Do NOT use `whisper-small-mlx` — broken processor with mlx_audio 0.3.x |
-| `mlx-community/Kokoro-82M-bf16` | TTS (text-to-speech) | 375 MB | Voice: `af_heart`, speed: 1.2 |
+| `mlx-community/parakeet-tdt-0.6b-v3` | ASR (speech-to-text) | ~2.3 GB | Do NOT use `whisper-small-mlx` — broken processor with mlx_audio 0.3.x |
+| `mlx-community/Kokoro-82M-bf16` | TTS (text-to-speech) | 375 MB | Voice: `am_adam`, speed: 1.2 |
 | `de_DE-thorsten-high` (Piper) | TTS (German) | 109 MB | ONNX, Piper HTTP sidecar on :5123 |
-| `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | LLM (conversation) | 852 MB | Loaded in-process via mlx-lm |
+| `mlx-community/Qwen3-4B-Instruct-2507-4bit` | LLM (conversation) | ~2.5 GB | Loaded in-process via mlx-lm. Requires `enable_thinking=False` (handled automatically). |
 
 ### Step 4: Configure
 
@@ -127,26 +127,29 @@ cp config.example.json config.json
 
 `config.example.json` ships with working defaults for local MLX inference. Edit `config.json` to change your bearer token or point to a remote LLM.
 
-**Key settings:**
+**Key settings** (nested config.json paths — matches `config.example.json`):
 - `bearer_token`: Must be non-empty. Phone profile must have the same value or profile parsing fails silently.
-- `llm_model`: Model name — loaded locally via MLX when `llm_base_url` is empty, or sent as `model` field to a remote OpenAI-compatible endpoint.
-- `llm_base_url`: Empty = local MLX. Set to an OpenAI-compatible base URL (e.g. `http://localhost:11434/v1`) for remote inference.
-- `llm_api_key`: Bearer token for remote endpoint (empty = no auth).
-- `llm_top_p`, `llm_top_k`, `llm_repeat_penalty`, `llm_stop`: Generation parameters — adjustable at runtime via the control center LLM Settings panel or `POST /api/config/llm`.
-- `tts_voice`: Kokoro voice ID (e.g. `af_heart`, `am_michael`). See `GET /api/config/tts` for the full list of available voices grouped by category.
-- `tts_speed`: 1.2 is natural cadence for Kokoro. Lower = slower speech.
-- `tts_lang`: TTS language — `en` (Kokoro) or `de` (Piper German). Default: `en`. **Control-center-only** — agents cannot change this.
-- `piper_base`: Piper HTTP server URL. Default: `http://127.0.0.1:5123`.
-- `piper_voice`: Piper voice model name. Default: `thorsten-high`. Options: `thorsten-high`, `thorsten-medium`, `thorsten-low`, `karlsson-low`, `pavoque-low`, `eva_k-x_low`, `kerstin-low`, `ramona-low`, `thorsten_emotional-medium`.
-- `piper_speaker`: Speaker ID for multi-speaker models (e.g. thorsten_emotional emotions: amused=0, angry=1, disgusted=2, drunk=3, neutral=4, sleepy=5, surprised=6, whisper=7). Default: `0`.
-- `piper_length_scale`: Piper speech rate (lower = faster). Default: `1.0`.
-- `piper_noise_scale`: Piper expressiveness/variation. Default: `0.667`.
-- `piper_noise_w`: Piper phoneme duration variation. Default: `0.8`.
-- `piper_sentence_silence`: Silence between sentences in seconds. Default: `0.2`.
-- `llm_top_p_enabled`, `llm_top_k_enabled`: Boolean flags to enable/disable sending `top_p` / `top_k` to the model. Default: both `true`. Useful when remote APIs don't support certain params.
-- `llm_context_tokens`: Total context window size in tokens. 0 = no token-based limit (use `max_history_turns` only). When set, history compaction also respects this budget.
+- `llm.model`: Model name — loaded locally via MLX when `llm.base_url` is empty, or sent as `model` field to a remote OpenAI-compatible endpoint.
+- `llm.base_url`: Empty = local MLX. Set to an OpenAI-compatible base URL (e.g. `http://localhost:11434/v1`) for remote inference.
+- `llm.api_key`: Bearer token for remote endpoint (empty = no auth).
+- `llm.max_tokens`: Max tokens per response. Default: `80` (short for low-latency voice).
+- `llm.temperature`: Sampling temperature. Default: `0.25`.
+- `llm.top_p`, `llm.top_k`, `llm.repeat_penalty`, `llm.stop`: Generation parameters — adjustable at runtime via the control center LLM Settings panel or `POST /api/config/llm`.
+- `llm.top_p_enabled`, `llm.top_k_enabled`: Boolean flags to enable/disable sending `top_p` / `top_k` to the model. Default: both `true`. Useful when remote APIs don't support certain params.
+- `llm.context_tokens`: Total context window size in tokens. 0 = no token-based limit (use `max_history_turns` only). When set, history compaction also respects this budget.
+- `tts.voice`: Kokoro voice ID (e.g. `am_adam`, `am_michael`). See `GET /api/config/tts` for the full list of available voices grouped by category.
+- `tts.speed`: 1.2 is natural cadence for Kokoro. Lower = slower speech.
+- `tts.lang`: TTS language — `en` (Kokoro) or `de` (Piper German). Default: `en`. **Control-center-only** — agents cannot change this.
+- `tts.piper.base`: Piper HTTP server URL. Default: `http://127.0.0.1:5123`.
+- `tts.piper.voice`: Piper voice model name. Default: `thorsten-high`. Options: `thorsten-high`, `thorsten-medium`, `thorsten-low`, `karlsson-low`, `pavoque-low`, `eva_k-x_low`, `kerstin-low`, `ramona-low`, `thorsten_emotional-medium`.
+- `tts.piper.speaker`: Speaker ID for multi-speaker models (e.g. thorsten_emotional emotions: amused=0, angry=1, disgusted=2, drunk=3, neutral=4, sleepy=5, surprised=6, whisper=7). Default: `0`.
+- `tts.piper.length_scale`: Piper speech rate (lower = faster). Default: `1.0`.
+- `tts.piper.noise_scale`: Piper expressiveness/variation. Default: `0.667`.
+- `tts.piper.noise_w`: Piper phoneme duration variation. Default: `0.8`.
+- `tts.piper.sentence_silence`: Silence between sentences in seconds. Default: `0.2`.
 - All config changes made via the control center or API are saved to `config.json` automatically and take effect immediately. LLM model changes are hot-loaded on the next turn — no restart needed.
 - All settings can be overridden via env vars: `GATEWAY_PORT=9000`, `GATEWAY_BEARER_TOKEN=xyz`, etc.
+- Legacy flat keys (e.g. `llm_model`, `tts_voice`, `piper_base`) are auto-migrated on load and still work with `config.get()` at runtime.
 
 **Call policy settings** (gateway is the single source of truth — phone fetches these at each call start):
 
@@ -186,7 +189,7 @@ The gateway talks to the ASR/TTS sidecar via standard OpenAI-compatible HTTP end
 - `POST /v1/audio/speech` — TTS
 - `GET /v1/models` — health check
 
-Set `mlx_audio_base` in `config.json` to point at the replacement server (default: `http://127.0.0.1:8765`).
+Set `asr.backend` in `config.json` to point at the replacement server (default: `http://127.0.0.1:8765`).
 
 **Compatible Linux alternatives:**
 - [faster-whisper-server](https://github.com/fedirz/faster-whisper-server) — OpenAI-compatible ASR with CUDA
@@ -195,13 +198,15 @@ Set `mlx_audio_base` in `config.json` to point at the replacement server (defaul
 
 ### LLM replacement
 
-Set `llm_base_url` in `config.json` to a local LLM server. The gateway sends standard OpenAI chat completion requests:
+Set `llm.base_url` in `config.json` to a local LLM server. The gateway sends standard OpenAI chat completion requests:
 
 ```json
 {
-  "llm_base_url": "http://127.0.0.1:11434/v1",
-  "llm_model": "qwen2.5:1.5b",
-  "llm_api_key": ""
+  "llm": {
+    "base_url": "http://127.0.0.1:11434/v1",
+    "model": "qwen3:4b",
+    "api_key": ""
+  }
 }
 ```
 
@@ -226,9 +231,9 @@ pip install -r requirements.txt
 # 3. Configure
 cp config.example.json config.json
 # Edit config.json:
-#   - Set mlx_audio_base to your ASR/TTS server URL
-#   - Set llm_base_url to your LLM server URL
-#   - Set llm_model to the model name your LLM server expects
+#   - Set asr.backend to your ASR/TTS server URL
+#   - Set llm.base_url to your LLM server URL
+#   - Set llm.model to the model name your LLM server expects
 
 # 4. Start gateway only (no bin/start.sh — that starts mlx_audio)
 source .venv/bin/activate
@@ -352,7 +357,7 @@ with tempfile.NamedTemporaryFile(suffix='.wav', delete=False, dir='tmp') as f:
     w = wave.open(f, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
     w.writeframes(b'\x00\x00' * 16000); w.close(); print(f.name)
 " | xargs -I{} curl -s -X POST http://127.0.0.1:8765/v1/audio/transcriptions \
-  -F "file=@{}" -F "model=mlx-community/parakeet-tdt-0.6b-v2" -F "language=en" -o /dev/null) &
+  -F "file=@{}" -F "model=mlx-community/parakeet-tdt-0.6b-v3" -F "language=en" -o /dev/null) &
 echo "ASR warming in background (~90s)..."
 ```
 
@@ -464,7 +469,7 @@ adb reverse --list
     "llm_ms": 355.8,
     "tts_ms": 630.4,
     "total_ms": 1436.4,
-    "llm_model": "local/mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+    "llm_model": "local/mlx-community/Qwen3-4B-Instruct-2507-4bit"
   }
 }
 ```
@@ -507,7 +512,7 @@ When `lang: "en"` (Kokoro):
 {
   "lang": "en",
   "model": "mlx-community/Kokoro-82M-bf16",
-  "voice": "af_heart",
+  "voice": "am_adam",
   "speed": 1.2,
   "voices": {
     "American Female": ["af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky"],
@@ -576,10 +581,10 @@ Does not affect the current config — use `POST /api/config/tts` to apply.
 
 ```json
 {
-  "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+  "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
   "base_url": "",
   "has_api_key": false,
-  "max_tokens": 400,
+  "max_tokens": 80,
   "context_tokens": 0,
   "max_history_turns": 8,
   "temperature": 0.2,
@@ -918,7 +923,7 @@ curl -sf http://127.0.0.1:8765/v1/models && echo "OK: mlx_audio"
 # 2. ASR works
 curl -s -X POST http://127.0.0.1:8765/v1/audio/transcriptions \
   -F "file=@tmp/tmpipgkgp6y.wav" \
-  -F "model=mlx-community/parakeet-tdt-0.6b-v2" \
+  -F "model=mlx-community/parakeet-tdt-0.6b-v3" \
   -F "language=en" && echo " OK: ASR"
 
 # 3. TTS works
@@ -960,7 +965,7 @@ Check `tmp/mlx_audio.log`. Common causes:
 - **`NoneType phonemes` crash**: Wrong misaki version — must be `==0.7.0`
 
 ### ASR returns 500 / "peer closed connection"
-- If using `whisper-small-mlx`: switch to `parakeet-tdt-0.6b-v2` (Whisper processor bug with mlx_audio 0.3.x)
+- If using `whisper-small-mlx`: switch to `parakeet-tdt-0.6b-v3` (Whisper processor bug with mlx_audio 0.3.x)
 - Check `tmp/mlx_audio.log` for the actual error
 
 ### Phone doesn't hit gateway

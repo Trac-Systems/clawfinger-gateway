@@ -1,0 +1,7 @@
+{
+  "name": "household_objects",
+  "description": "Common household objects — visual descriptions, typical locations, search strategies",
+  "execution_mode": "slow",
+  "topics": ["common"],
+  "required_capabilities": ["vision", "locomotion"]
+}

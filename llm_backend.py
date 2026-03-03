@@ -41,10 +41,38 @@ def _ensure_local_llm(llm: dict[str, Any]) -> tuple[Any, Any]:
     return _LOCAL_MODEL, _LOCAL_TOKENIZER
 
 
-def _apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
+def _flatten_content(content: Any) -> str:
+    """Flatten multimodal content arrays to text for text-only backends."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif item.get("type") == "image_url":
+                    parts.append("[image]")
+            elif isinstance(item, str):
+                parts.append(item)
+        return " ".join(p for p in parts if p)
+    return str(content)
+
+
+def _apply_chat_template(tokenizer: Any, messages: list[dict[str, Any]]) -> str:
+    # Flatten multimodal content for local MLX (text-only)
+    flat_messages = []
+    for m in messages:
+        flat = {**m, "content": _flatten_content(m.get("content", ""))}
+        flat_messages.append(flat)
     if hasattr(tokenizer, "apply_chat_template"):
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    lines = [f"{m['role']}: {m['content']}" for m in messages]
+        kwargs = {"tokenize": False, "add_generation_prompt": True}
+        # Qwen3 models: disable thinking mode for low-latency voice use
+        try:
+            return tokenizer.apply_chat_template(flat_messages, enable_thinking=False, **kwargs)
+        except TypeError:
+            return tokenizer.apply_chat_template(flat_messages, **kwargs)
+    lines = [f"{m['role']}: {m['content']}" for m in flat_messages]
     lines.append("assistant:")
     return "\n".join(lines)
 
@@ -71,15 +99,20 @@ def preload() -> None:
         print(f"[gateway] LLM preload failed: {exc}")
 
 
-def generate(messages: list[dict[str, str]]) -> tuple[str, float, str]:
-    """Generate LLM reply. Returns (reply_text, llm_ms, model_name)."""
+def generate(messages: list[dict[str, Any]], raw: bool = False) -> tuple[str, float, str]:
+    """Generate LLM reply. Returns (reply_text, llm_ms, model_name).
+
+    When raw=True: apply only safe_text() (sanitize control chars), skip
+    trim_for_tts() which destroys JSON.  Used by robot controller.
+    When raw=False (default): apply trim_for_tts() for phone/TTS pipeline.
+    """
     llm = config.section("llm")
     if _is_local(llm):
-        return _generate_local(messages, llm)
-    return _generate_remote(messages, llm)
+        return _generate_local(messages, llm, raw=raw)
+    return _generate_remote(messages, llm, raw=raw)
 
 
-def _generate_local(messages: list[dict[str, str]], llm: dict[str, Any]) -> tuple[str, float, str]:
+def _generate_local(messages: list[dict[str, Any]], llm: dict[str, Any], raw: bool = False) -> tuple[str, float, str]:
     start = time.perf_counter()
     model, tokenizer = _ensure_local_llm(llm)
     prompt = _apply_chat_template(tokenizer, messages)
@@ -111,14 +144,18 @@ def _generate_local(messages: list[dict[str, str]], llm: dict[str, Any]) -> tupl
             verbose=False,
         )
 
-    text = trim_for_tts(str(text or ""))
+    text = str(text or "")
+    if raw:
+        text = safe_text(text)
+    else:
+        text = trim_for_tts(text)
     if not text:
         text = "Got it. Please continue."
 
     return text, (time.perf_counter() - start) * 1000, f"local/{llm['model']}"
 
 
-def _generate_remote(messages: list[dict[str, str]], llm: dict[str, Any]) -> tuple[str, float, str]:
+def _generate_remote(messages: list[dict[str, Any]], llm: dict[str, Any], raw: bool = False) -> tuple[str, float, str]:
     start = time.perf_counter()
     base_url = llm["base_url"].rstrip("/")
     if not base_url:
@@ -129,6 +166,7 @@ def _generate_remote(messages: list[dict[str, str]], llm: dict[str, Any]) -> tup
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    # Remote OpenAI-compatible APIs support content arrays natively
     payload: dict[str, Any] = {
         "model": llm["model"],
         "messages": messages,
@@ -151,7 +189,10 @@ def _generate_remote(messages: list[dict[str, str]], llm: dict[str, Any]) -> tup
     text = _extract_openai_text(body)
     if not text:
         text = "Got it. Please continue."
-    text = trim_for_tts(text)
+    if raw:
+        text = safe_text(text)
+    else:
+        text = trim_for_tts(text)
 
     return text, (time.perf_counter() - start) * 1000, llm["model"]
 

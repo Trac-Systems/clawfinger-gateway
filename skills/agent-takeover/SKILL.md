@@ -541,30 +541,25 @@ python3 test_takeover.py
 
 ## Robot Command Protocol
 
-The same `/api/agent/ws` WebSocket supports robot commands alongside phone commands. Robot messages use the `robot.*` namespace.
+The same `/api/agent/ws` WebSocket supports robot commands alongside phone commands. Robot commands are dispatched through the Intercom P2P transport to the robot's Jetson Orin.
 
 ### Robot WS messages (agent → gateway)
 
 | Send | Fields | Description |
 |------|--------|-------------|
-| `robot.command` | `command`, `endpoint: "robot"` | Send high-level command (walk, turn, stand, etc.) |
-| `robot.task` | `task`, `endpoint: "robot"` | Submit async compound task |
-| `robot.task_status` | `task_id` | Query task progress |
-| `robot.task_cancel` | `task_id` | Cancel running task |
-| `robot.status` | — | Query robot state (battery, pose, connectivity) |
-| `set_robot_config` | `config: {...}` | Update robot config (security keys blocked) |
+| `robot_command` | `command: {type, params, timeout}` | Send command to robot via Intercom transport |
+| `robot_status` | — | Query robot config + connection state |
 
 ### Robot WS messages (gateway → agent)
 
 | Receive | Fields | Description |
 |---------|--------|-------------|
-| `robot.command.ack` | `ok`, `result` | Command result |
-| `robot.task.ack` | `ok`, `task_id` | Task submitted, returns ID for status checks |
-| `robot.task.completed` | `task_id`, `result` | Async task finished |
-| `robot.task.failed` | `task_id`, `error` | Async task failed |
-| `robot.status` | `connected`, `battery`, `pose`, `model`, `capabilities` | Robot state |
-| `robot.connected` | `model`, `capabilities` | Robot came online |
-| `robot.disconnected` | `reason` | Robot went offline |
+| `robot.command.ack` | `ok`, `detail`, `error` | Command result from robot |
+| `robot.status` | `connected`, `model`, `capabilities`, `transport_connected`, `intercom_running` | Robot state |
+| `robot.connected` | `model` | Robot came online (heartbeat_ack received) |
+| `robot.disconnected` | `model`, `reason` | Robot went offline (heartbeat timeout) |
+
+**Command latency:** Robot commands travel through Intercom P2P (Mac Mini → HyperDHT → Jetson), adding ~50-200ms round-trip vs local LLM which is instantaneous. Fire-and-forget commands (`stop`, `safety_stop`) return immediately without waiting for the robot's response.
 
 ### Cross-Endpoint Scenarios
 
@@ -591,3 +586,39 @@ Agents connect to a single `/api/agent/ws` and can interleave phone and robot co
 5. clawfinger_turn_reply "I've sent the robot to get your package"
 6. clawfinger_robot_task_status <task_id>    (check between turns)
 ```
+
+---
+
+## Robot Takeover
+
+Same architectural pattern as phone takeover but for the robot endpoint. Agents receive transcript text (from robot mic ASR), reply with text (spoken on robot speaker via Intercom TTS).
+
+### Protocol
+
+| Message | Direction | Description |
+|---|---|---|
+| `robot_takeover` | Agent → Gateway | Agent takes control of robot |
+| `robot_takeover.ack` | Gateway → Agent | Confirmed |
+| `robot_turn.request` | Gateway → Agent | User spoke to robot — transcript + request_id |
+| reply with `request_id` | Agent → Gateway | Text reply spoken on robot + optional `commands: [...]` array |
+| `robot_release` | Agent → Gateway | Agent releases robot control |
+| `robot_release.ack` | Gateway → Agent | Confirmed |
+
+### Key Differences from Phone Takeover
+
+- **Input**: Agent receives transcript text (from robot mic ASR on Jetson)
+- **Output**: Agent reply text is spoken on robot speaker via Intercom TTS
+- **Commands**: Agent can include `commands: [...]` array to execute robot primitives alongside speech
+- **Timeout/fallback**: Same as phone — if agent doesn't reply, local LLM handles that turn
+- **Safety**: `{wake_word} stop` bypasses agent takeover (processed locally)
+
+### OpenClaw Tools
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_robot_takeover` | Take full control of robot |
+| `clawfinger_robot_turn_wait` | Wait for user voice input (returns transcript + request_id) |
+| `clawfinger_robot_turn_reply` | Send text reply + optional commands (requires request_id) |
+| `clawfinger_robot_release` | Release robot control back to local LLM |
+
+For robot skills and projects, see [robot-gateway/SKILL.md](../robot-gateway/SKILL.md).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import re
 import time
@@ -10,6 +11,8 @@ from pathlib import Path
 import httpx
 
 import config
+
+log = logging.getLogger("voice")
 
 _SPOKEN_ALLOWED_RE = re.compile(r"[^\w\s\.,!?;:'\"()\-\n]", re.UNICODE)
 
@@ -92,26 +95,39 @@ def _synthesize_piper(text: str) -> bytes:
     return response.content
 
 
+def _synthesize_kokoro(text: str, tts: dict, asr: dict) -> bytes:
+    """Synthesize text via Kokoro (English) on mlx_audio. Returns raw WAV bytes."""
+    base = (tts.get("mlx_audio_base") or asr["backend"]).rstrip("/")
+    payload = {
+        "model": tts["model"],
+        "input": text,
+        "voice": tts["voice"],
+        "speed": tts["speed"],
+        "response_format": "wav",
+    }
+    resp = httpx.post(f"{base}/v1/audio/speech", json=payload, timeout=180)
+    resp.raise_for_status()
+    return resp.content
+
+
 def synthesize(text: str) -> tuple[bytes, float]:
-    """Run TTS on text. Routes to Piper (German) or Kokoro (English) based on tts.lang."""
+    """Run TTS on text. Routes to Piper (German) or Kokoro (English) based on tts.lang.
+
+    If Piper is unavailable when German is selected, falls back to English Kokoro
+    with a log warning instead of crashing.
+    """
     tts = config.section("tts")
     asr = config.section("asr")
     start = time.perf_counter()
 
     if tts.get("lang", "en") == "de":
-        wav = _synthesize_piper(_trim_for_tts(text))
+        try:
+            wav = _synthesize_piper(_trim_for_tts(text))
+        except Exception as exc:
+            log.warning("Piper TTS failed, falling back to English Kokoro: %s", exc)
+            wav = _synthesize_kokoro(_trim_for_tts(text), tts, asr)
     else:
-        base = asr["backend"].rstrip("/")
-        payload = {
-            "model": tts["model"],
-            "input": _trim_for_tts(text),
-            "voice": tts["voice"],
-            "speed": tts["speed"],
-            "response_format": "wav",
-        }
-        resp = httpx.post(f"{base}/v1/audio/speech", json=payload, timeout=180)
-        resp.raise_for_status()
-        wav = resp.content
+        wav = _synthesize_kokoro(_trim_for_tts(text), tts, asr)
 
     return wav, (time.perf_counter() - start) * 1000
 

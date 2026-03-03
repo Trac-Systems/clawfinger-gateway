@@ -14,6 +14,11 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface PendingAckFull {
+  resolve: (value: any) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface Logger {
   info(msg: string): void;
   warn(msg: string): void;
@@ -26,8 +31,18 @@ interface TurnRequest {
   request_id: string;
 }
 
+interface RobotTurnRequest {
+  transcript: string;
+  request_id: string;
+}
+
 interface TurnWaiter {
   resolve: (value: TurnRequest | null) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface RobotTurnWaiter {
+  resolve: (value: RobotTurnRequest | null) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -37,15 +52,19 @@ export class WsBridge {
   private ws: WebSocket | null = null;
   private listeners: EventCallback[] = [];
   private pendingAcks: Map<string, PendingRequest> = new Map();
+  private pendingAcksFull: Map<string, PendingAckFull> = new Map();
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30_000;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private shouldConnect = false;
   private turnQueue: TurnRequest[] = [];
   private turnWaiters: TurnWaiter[] = [];
+  private robotTurnQueue: RobotTurnRequest[] = [];
+  private robotTurnWaiters: RobotTurnWaiter[] = [];
 
   isConnected = false;
   takenOverSessions: Set<string> = new Set();
+  robotTakenOver = false;
 
   constructor(gatewayUrl: string, logger: Logger) {
     this.gatewayUrl = gatewayUrl.replace(/\/+$/, "");
@@ -66,12 +85,19 @@ export class WsBridge {
     }
     this.isConnected = false;
     this.takenOverSessions.clear();
+    this.robotTakenOver = false;
     this.turnQueue.length = 0;
     for (const w of this.turnWaiters) {
       clearTimeout(w.timer);
       w.resolve(null);
     }
     this.turnWaiters.length = 0;
+    this.robotTurnQueue.length = 0;
+    for (const w of this.robotTurnWaiters) {
+      clearTimeout(w.timer);
+      w.resolve(null);
+    }
+    this.robotTurnWaiters.length = 0;
   }
 
   onEvent(callback: EventCallback): void {
@@ -150,6 +176,62 @@ export class WsBridge {
     );
   }
 
+  // --- Robot takeover ---
+
+  /**
+   * Take full control of the robot endpoint.
+   */
+  async robotTakeover(): Promise<boolean> {
+    if (!this.ws || !this.isConnected) return false;
+    const ok = await this.sendAndWaitAck("robot_takeover", {}, "robot_takeover.ack");
+    if (ok) this.robotTakenOver = true;
+    return ok;
+  }
+
+  /**
+   * Release robot control back to local LLM.
+   */
+  async robotRelease(): Promise<boolean> {
+    if (!this.ws || !this.isConnected) return false;
+    const ok = await this.sendAndWaitAck("robot_release", {}, "robot_release.ack");
+    if (ok) this.robotTakenOver = false;
+    return ok;
+  }
+
+  /**
+   * Wait for the next robot turn request (user spoke to robot during takeover).
+   */
+  popRobotTurnRequest(timeoutMs: number): Promise<RobotTurnRequest | null> {
+    if (this.robotTurnQueue.length > 0) {
+      return Promise.resolve(this.robotTurnQueue.shift()!);
+    }
+
+    return new Promise<RobotTurnRequest | null>((resolve) => {
+      const timer = setTimeout(() => {
+        const idx = this.robotTurnWaiters.findIndex((w) => w.resolve === resolve);
+        if (idx !== -1) this.robotTurnWaiters.splice(idx, 1);
+        resolve(null);
+      }, timeoutMs);
+
+      this.robotTurnWaiters.push({ resolve, timer });
+    });
+  }
+
+  /**
+   * Send a robot turn reply (text spoken on robot + optional commands).
+   */
+  sendRobotTurnReply(
+    requestId: string,
+    reply: string,
+    commands?: Array<Record<string, unknown>>,
+  ): void {
+    const msg: Record<string, unknown> = { reply, request_id: requestId };
+    if (commands && commands.length > 0) {
+      msg.commands = commands;
+    }
+    this.sendRaw(msg);
+  }
+
   /**
    * Send a raw JSON message on the WebSocket.
    */
@@ -157,6 +239,21 @@ export class WsBridge {
     if (this.ws && this.isConnected) {
       this.ws.send(JSON.stringify(msg));
     }
+  }
+
+  /**
+   * Wait for a specific ack message type and return the full message object.
+   * Returns null on timeout. Used by robot command tool to get full ack data.
+   */
+  waitForAck(ackType: string, timeoutMs: number = 10_000): Promise<any | null> {
+    return new Promise<any | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingAcksFull.delete(ackType);
+        resolve(null);
+      }, timeoutMs);
+
+      this.pendingAcksFull.set(ackType, { resolve, timer });
+    });
   }
 
   // --- Internal ---
@@ -194,12 +291,19 @@ export class WsBridge {
         this.isConnected = false;
         this.stopHeartbeat();
         this.takenOverSessions.clear();
+        this.robotTakenOver = false;
         this.turnQueue.length = 0;
         for (const w of this.turnWaiters) {
           clearTimeout(w.timer);
           w.resolve(null);
         }
         this.turnWaiters.length = 0;
+        this.robotTurnQueue.length = 0;
+        for (const w of this.robotTurnWaiters) {
+          clearTimeout(w.timer);
+          w.resolve(null);
+        }
+        this.robotTurnWaiters.length = 0;
         if (this.shouldConnect) {
           this.scheduleReconnect();
         }
@@ -220,6 +324,14 @@ export class WsBridge {
       clearTimeout(pending.timer);
       this.pendingAcks.delete(msgType);
       pending.resolve(msg.ok !== false);
+    }
+
+    // Check for pending full-ack resolution (returns entire message object)
+    if (msgType && this.pendingAcksFull.has(msgType)) {
+      const pending = this.pendingAcksFull.get(msgType)!;
+      clearTimeout(pending.timer);
+      this.pendingAcksFull.delete(msgType);
+      pending.resolve(msg);
     }
 
     // Dispatch to listeners
@@ -256,6 +368,26 @@ export class WsBridge {
           waiter.resolve(turn);
         } else {
           this.turnQueue.push(turn);
+        }
+      }
+    }
+
+    // Queue robot_turn.request events for popRobotTurnRequest consumers
+    if (msgType === "robot_turn.request") {
+      const d = msg.data || msg;
+      const request_id = d.request_id || msg.request_id;
+      if (request_id) {
+        const turn: RobotTurnRequest = {
+          transcript: d.transcript || msg.transcript || "",
+          request_id,
+        };
+
+        if (this.robotTurnWaiters.length > 0) {
+          const waiter = this.robotTurnWaiters.shift()!;
+          clearTimeout(waiter.timer);
+          waiter.resolve(turn);
+        } else {
+          this.robotTurnQueue.push(turn);
         }
       }
     }

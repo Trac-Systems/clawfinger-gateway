@@ -25,6 +25,9 @@ voices/*.onnx.json
 *.swp
 .DS_Store
 
+# Intercom (cloned locally, not shipped)
+intercom/
+
 # Misc
 linked.txt
 test_takeover.py

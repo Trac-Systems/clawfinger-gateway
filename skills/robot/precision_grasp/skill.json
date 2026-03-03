@@ -1,0 +1,9 @@
+{
+  "name": "precision_grasp",
+  "description": "Trained RL policy for precision object grasping",
+  "execution_mode": "fast",
+  "status": "coming_soon",
+  "required_capabilities": ["manipulation", "vision"],
+  "policy_format": "onnx",
+  "notes": "Runs entirely on Jetson. No LLM in the loop."
+}

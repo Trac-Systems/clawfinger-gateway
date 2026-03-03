@@ -81,6 +81,18 @@ def list_agents() -> list[dict[str, Any]]:
     ]
 
 
+def get_agent_id(ws: WebSocket) -> str | None:
+    """Return a unique identifier for a connected agent WebSocket."""
+    if ws in _AGENTS:
+        return str(id(ws))
+    return None
+
+
+def list_agent_connections() -> list[WebSocket]:
+    """Return all connected agent WebSocket instances."""
+    return list(_AGENTS.keys())
+
+
 # ---------------------------------------------------------------------------
 # Turn request/reply correlation (single-reader WS pattern)
 # ---------------------------------------------------------------------------

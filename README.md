@@ -6,7 +6,7 @@ A local voice gateway that runs the full **ASR → LLM → TTS** pipeline on App
 
 1. Phone sends audio over HTTP to the gateway
 2. **ASR** (Parakeet via mlx_audio) transcribes the caller's speech
-3. **LLM** (Qwen 1.5B via mlx-lm, or any OpenAI-compatible endpoint) generates a reply
+3. **LLM** (Qwen3 4B via mlx-lm, or any OpenAI-compatible endpoint) generates a reply
 4. **TTS** (Kokoro via mlx_audio for English, Piper Thorsten for German) synthesizes the reply to speech
 5. Audio is returned to the phone as base64 WAV
 

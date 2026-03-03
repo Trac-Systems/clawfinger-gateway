@@ -65,20 +65,24 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-# Start Piper TTS (German) if model file exists
+# Start Piper TTS (German) if model file exists AND piper-tts is installed
 PIPER_PID=""
 if [ -f "$PIPER_MODEL" ]; then
-  echo "[start.sh] Starting Piper TTS on $MLX_AUDIO_HOST:$PIPER_PORT..."
-  python -m piper.http_server --model "$PIPER_MODEL" --host "$MLX_AUDIO_HOST" --port "$PIPER_PORT" &
-  PIPER_PID=$!
-  echo "$PIPER_PID" > "$PID_DIR/piper.pid"
-  for i in $(seq 1 30); do
-    if curl -sf -X POST -H "Content-Type: application/json" -d '{"text":"test"}' "http://$MLX_AUDIO_HOST:$PIPER_PORT/" -o /dev/null 2>&1; then
-      echo "[start.sh] Piper ready"
-      break
-    fi
-    sleep 1
-  done
+  if python -c "import piper" 2>/dev/null; then
+    echo "[start.sh] Starting Piper TTS on $MLX_AUDIO_HOST:$PIPER_PORT..."
+    python -m piper.http_server --model "$PIPER_MODEL" --host "$MLX_AUDIO_HOST" --port "$PIPER_PORT" &
+    PIPER_PID=$!
+    echo "$PIPER_PID" > "$PID_DIR/piper.pid"
+    for i in $(seq 1 30); do
+      if curl -sf -X POST -H "Content-Type: application/json" -d '{"text":"test"}' "http://$MLX_AUDIO_HOST:$PIPER_PORT/" -o /dev/null 2>&1; then
+        echo "[start.sh] Piper ready"
+        break
+      fi
+      sleep 1
+    done
+  else
+    echo "[start.sh] piper-tts not installed — skipping German TTS (pip install piper-tts flask pathvalidate)"
+  fi
 else
   echo "[start.sh] Piper model not found at $PIPER_MODEL — skipping German TTS"
 fi

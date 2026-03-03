@@ -12,7 +12,7 @@ Local voice gateway: ASR -> LLM -> TTS pipeline for AI-assisted phone calls. No 
 
 ## Skills
 
-### [Voice Gateway](skills/voice-gateway/SKILL.md)
+### [Phone Gateway](skills/phone-gateway/SKILL.md)
 Installation, configuration, startup, API endpoints, agent WebSocket protocol, instruction system, control center UI.
 
 ### [OpenClaw Plugin](skills/openclaw-clawfinger/SKILL.md)
@@ -20,3 +20,6 @@ OpenClaw plugin for real-time call takeover, injection, context, and observation
 
 ### [OpenClaw Ops](skills/openclaw-ops/SKILL.md)
 Operational runbooks for OpenClaw skill-only automation: scheduled checks, webhook triggers, scripted REST operations (dial, inject, policy updates) — no plugin required.
+
+### [Robot Gateway](skills/robot-gateway/SKILL.md)
+Robot endpoint with voice-driven project execution, skill packages, Intercom P2P transport, and agent takeover.
