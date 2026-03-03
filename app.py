@@ -25,6 +25,7 @@ from endpoints.phone import routes as phone_routes_mod
 from endpoints import robot as robot_mod
 from endpoints.robot import controller as robot_ctrl
 from endpoints.robot import perception as robot_perception
+from endpoints.robot import memory as robot_memory
 from endpoints.robot import skill_loader as robot_skills
 from endpoints.phone.routes import (
     router as phone_router,
@@ -42,9 +43,10 @@ _TMP_DIR.mkdir(parents=True, exist_ok=True)
 _STATIC_DIR = _ROOT / "static"
 _START_TIME = time.time()
 
-# Intercom transport state (set during startup if robot.enabled)
+# Robot transport state (set during startup if robot.enabled)
 _intercom_process = None
-_intercom_bridge = None
+_intercom_bridge = None     # IntercomBridge or WebSocketRobotBridge
+_ws_robot_bridge = None     # Only set when transport=websocket
 
 
 # ---------------------------------------------------------------------------
@@ -1129,6 +1131,320 @@ async def robot_audio_monitor_stop(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Robot spatial memory endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/robot/memory/persons")
+async def memory_list_persons(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    return JSONResponse(robot_memory.list_persons())
+
+
+@app.post("/api/robot/memory/persons")
+async def memory_add_person(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    description = body.get("description", "")
+    ref_images = []
+    for b64 in body.get("reference_images", []):
+        try:
+            ref_images.append(base64.b64decode(b64))
+        except Exception:
+            raise HTTPException(400, "Invalid base64 in reference_images")
+    if ref_images and robot_memory.clip_available():
+        result = await asyncio.to_thread(
+            robot_memory.add_person, name, description, ref_images)
+    else:
+        result = robot_memory.add_person(name, description,
+                                         ref_images if ref_images else None)
+    await bus.publish("robot.memory.person_added", result, endpoint="robot")
+    return JSONResponse(result)
+
+
+@app.get("/api/robot/memory/persons/{person_id}")
+async def memory_get_person(person_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    person = robot_memory.get_person(person_id)
+    if not person:
+        raise HTTPException(404, f"Person not found: {person_id}")
+    return JSONResponse(person)
+
+
+@app.delete("/api/robot/memory/persons/{person_id}")
+async def memory_delete_person(person_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    if not robot_memory.delete_person(person_id):
+        raise HTTPException(404, f"Person not found: {person_id}")
+    await bus.publish("robot.memory.person_deleted",
+                      {"id": person_id}, endpoint="robot")
+    return JSONResponse({"ok": True, "id": person_id})
+
+
+@app.post("/api/robot/memory/persons/{person_id}/reference")
+async def memory_add_person_ref(person_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    b64 = body.get("image", "")
+    if not b64:
+        raise HTTPException(400, "image (base64) is required")
+    try:
+        image_bytes = base64.b64decode(b64)
+    except Exception:
+        raise HTTPException(400, "Invalid base64 image")
+    result = await asyncio.to_thread(
+        robot_memory.add_person_reference, person_id, image_bytes)
+    if not result:
+        raise HTTPException(404, f"Person not found or CLIP unavailable: {person_id}")
+    return JSONResponse(result)
+
+
+@app.get("/api/robot/memory/objects")
+async def memory_list_objects(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    return JSONResponse(robot_memory.list_objects())
+
+
+@app.post("/api/robot/memory/objects")
+async def memory_add_object(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    description = body.get("description", "")
+    ref_images = []
+    for b64 in body.get("reference_images", []):
+        try:
+            ref_images.append(base64.b64decode(b64))
+        except Exception:
+            raise HTTPException(400, "Invalid base64 in reference_images")
+    if ref_images and robot_memory.clip_available():
+        result = await asyncio.to_thread(
+            robot_memory.add_object, name, description, ref_images)
+    else:
+        result = robot_memory.add_object(name, description,
+                                         ref_images if ref_images else None)
+    await bus.publish("robot.memory.object_added", result, endpoint="robot")
+    return JSONResponse(result)
+
+
+@app.get("/api/robot/memory/objects/{object_id}")
+async def memory_get_object(object_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    obj = robot_memory.get_object(object_id)
+    if not obj:
+        raise HTTPException(404, f"Object not found: {object_id}")
+    return JSONResponse(obj)
+
+
+@app.delete("/api/robot/memory/objects/{object_id}")
+async def memory_delete_object(object_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    if not robot_memory.delete_object(object_id):
+        raise HTTPException(404, f"Object not found: {object_id}")
+    await bus.publish("robot.memory.object_deleted",
+                      {"id": object_id}, endpoint="robot")
+    return JSONResponse({"ok": True, "id": object_id})
+
+
+@app.post("/api/robot/memory/objects/{object_id}/reference")
+async def memory_add_object_ref(object_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    b64 = body.get("image", "")
+    if not b64:
+        raise HTTPException(400, "image (base64) is required")
+    try:
+        image_bytes = base64.b64decode(b64)
+    except Exception:
+        raise HTTPException(400, "Invalid base64 image")
+    result = await asyncio.to_thread(
+        robot_memory.add_object_reference, object_id, image_bytes)
+    if not result:
+        raise HTTPException(404, f"Object not found or CLIP unavailable: {object_id}")
+    return JSONResponse(result)
+
+
+@app.get("/api/robot/memory/rooms")
+async def memory_list_rooms(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    return JSONResponse(robot_memory.list_rooms())
+
+
+@app.post("/api/robot/memory/rooms")
+async def memory_add_room(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    description = body.get("description", "")
+    ref_image = None
+    if body.get("reference_image"):
+        try:
+            ref_image = base64.b64decode(body["reference_image"])
+        except Exception:
+            raise HTTPException(400, "Invalid base64 reference_image")
+    if ref_image and robot_memory.clip_available():
+        result = await asyncio.to_thread(
+            robot_memory.add_room, name, description, ref_image)
+    else:
+        result = robot_memory.add_room(name, description, ref_image)
+    await bus.publish("robot.memory.room_added", result, endpoint="robot")
+    return JSONResponse(result)
+
+
+@app.delete("/api/robot/memory/rooms/{room_id}")
+async def memory_delete_room(room_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    if not robot_memory.delete_room(room_id):
+        raise HTTPException(404, f"Room not found: {room_id}")
+    await bus.publish("robot.memory.room_deleted",
+                      {"id": room_id}, endpoint="robot")
+    return JSONResponse({"ok": True, "id": room_id})
+
+
+@app.get("/api/robot/memory/routines")
+async def memory_list_routines(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    return JSONResponse(robot_memory.list_routines())
+
+
+@app.post("/api/robot/memory/routines")
+async def memory_add_routine(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    schedule = body.get("schedule", "")
+    description = body.get("description", "")
+    result = robot_memory.add_routine(name, schedule, description)
+    await bus.publish("robot.memory.routine_added", result, endpoint="robot")
+    return JSONResponse(result)
+
+
+@app.delete("/api/robot/memory/routines/{routine_id}")
+async def memory_delete_routine(routine_id: str, request: Request) -> JSONResponse:
+    _check_bearer(request)
+    if not robot_memory.delete_routine(routine_id):
+        raise HTTPException(404, f"Routine not found: {routine_id}")
+    await bus.publish("robot.memory.routine_deleted",
+                      {"id": routine_id}, endpoint="robot")
+    return JSONResponse({"ok": True, "id": routine_id})
+
+
+@app.post("/api/robot/memory/observations")
+async def memory_add_observation(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    metadata = body.get("metadata", {})
+
+    # If embedding is provided, store directly (pre-computed from observer)
+    embedding = body.get("embedding")
+    if embedding and isinstance(embedding, list):
+        obs_id = robot_memory.add_observation(embedding, metadata)
+        return JSONResponse({"ok": True, "id": obs_id})
+
+    # If image is provided, embed on Mac Mini (convenience/testing only)
+    image_b64 = body.get("image")
+    if image_b64:
+        try:
+            image_bytes = base64.b64decode(image_b64)
+        except Exception:
+            raise HTTPException(400, "Invalid base64 image")
+        obs_id = await asyncio.to_thread(
+            robot_memory.ingest_frame, image_bytes, metadata)
+        return JSONResponse({"ok": True, "id": obs_id})
+
+    raise HTTPException(400, "Either embedding or image is required")
+
+
+@app.post("/api/robot/memory/query")
+async def memory_query(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    query_type = body.get("type", "text")
+    n_results = body.get("n_results", 10)
+    filters = body.get("filters", {})
+
+    if query_type == "text":
+        text = body.get("text", "")
+        if not text:
+            raise HTTPException(400, "text is required for text query")
+        results = await asyncio.to_thread(
+            robot_memory.query_text, text, n_results, filters)
+        return JSONResponse({"results": results, "count": len(results)})
+
+    elif query_type == "image":
+        image_b64 = body.get("image", "")
+        if not image_b64:
+            raise HTTPException(400, "image is required for image query")
+        try:
+            image_bytes = base64.b64decode(image_b64)
+        except Exception:
+            raise HTTPException(400, "Invalid base64 image")
+        results = await asyncio.to_thread(
+            robot_memory.query_image, image_bytes, n_results, filters)
+        return JSONResponse({"results": results, "count": len(results)})
+
+    elif query_type == "nearby":
+        x = body.get("x", 0.0)
+        y = body.get("y", 0.0)
+        z = body.get("z", 0.0)
+        radius = body.get("radius", 2.0)
+        results = robot_memory.query_nearby(x, y, z, radius, n_results, filters)
+        return JSONResponse({"results": results, "count": len(results)})
+
+    elif query_type == "person_sightings":
+        person_id = body.get("person_id", "")
+        if not person_id:
+            raise HTTPException(400, "person_id is required")
+        results = robot_memory.person_sightings(
+            person_id,
+            time_start=filters.get("time_start"),
+            time_end=filters.get("time_end"),
+            room=filters.get("room"),
+        )
+        return JSONResponse({"results": results, "count": len(results)})
+
+    elif query_type == "object_sightings":
+        object_id = body.get("object_id", "")
+        if not object_id:
+            raise HTTPException(400, "object_id is required")
+        results = robot_memory.object_sightings(
+            object_id,
+            time_start=filters.get("time_start"),
+            time_end=filters.get("time_end"),
+            room=filters.get("room"),
+        )
+        return JSONResponse({"results": results, "count": len(results)})
+
+    elif query_type == "room_activity":
+        room = body.get("room", "")
+        if not room:
+            raise HTTPException(400, "room is required")
+        results = robot_memory.room_activity(
+            room,
+            time_start=filters.get("time_start"),
+            time_end=filters.get("time_end"),
+        )
+        return JSONResponse({"results": results, "count": len(results)})
+
+    else:
+        raise HTTPException(400, f"Unknown query type: {query_type}")
+
+
+@app.get("/api/robot/memory/stats")
+async def memory_stats(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    return JSONResponse(robot_memory.stats())
+
+
+# ---------------------------------------------------------------------------
 # UI WebSocket
 # ---------------------------------------------------------------------------
 
@@ -1178,6 +1494,107 @@ async def _periodic_sweep() -> None:
                 await bus.publish("session.ended", {"session_id": stale_sid, "reason": "stale"}, session_id=stale_sid)
         except Exception:
             pass  # Don't crash the background loop
+
+
+async def _start_ws_transport() -> None:
+    """Start WebSocket robot transport (for sim adapter / direct connections)."""
+    global _intercom_bridge, _ws_robot_bridge
+
+    robot_cfg = config.section("robot")
+    model_name = robot_cfg.get("model", "unitree_g1")
+
+    from transport.ws_bridge import WebSocketRobotBridge
+    bridge = WebSocketRobotBridge(
+        heartbeat_interval=robot_cfg.get("heartbeat_interval", 5),
+        disconnect_timeout=robot_cfg.get("disconnect_timeout", 15),
+        disconnect_debounce=robot_cfg.get("disconnect_debounce", 3),
+        bearer_token=config.get("bearer_token", ""),
+    )
+
+    async def _on_robot_connected():
+        robot_mod.set_connected(model_name, True)
+        await bus.publish("robot.connected", {"model": model_name}, endpoint="robot")
+        print(f"[gateway] Robot connected via WebSocket: {model_name}")
+
+    async def _on_robot_disconnected(reason: str):
+        robot_mod.set_connected(model_name, False)
+        robot_perception.stop_all()
+        await bus.publish("robot.camera.stream_stopped", {}, endpoint="robot")
+        await bus.publish("robot.audio.monitor_stopped", {}, endpoint="robot")
+        await bus.publish("robot.disconnected", {"model": model_name, "reason": reason}, endpoint="robot")
+        print(f"[gateway] Robot disconnected via WebSocket: {model_name} ({reason})")
+
+    async def _on_robot_message(msg: dict):
+        msg_type = msg.get("type", "")
+        if msg_type == "camera_frame":
+            robot_perception.push_frame(
+                msg.get("source", "head_rgb"),
+                msg.get("image_base64", ""),
+                msg.get("seq", 0),
+                msg.get("ts", time.time()),
+            )
+            return
+        elif msg_type == "audio_chunk":
+            source = msg.get("source", "mic_array")
+            robot_perception.push_audio(
+                source,
+                msg.get("audio_base64", ""),
+                msg.get("sample_rate", 16000),
+                msg.get("channels", 1),
+                msg.get("seq", 0),
+                msg.get("ts", time.time()),
+            )
+            await bus.publish("robot.audio_chunk", {
+                "source": source,
+                "audio_base64": msg.get("audio_base64", ""),
+                "sample_rate": msg.get("sample_rate", 16000),
+            }, endpoint="robot")
+            return
+        elif msg_type == "observation":
+            embedding = msg.get("embedding", [])
+            metadata = msg.get("metadata", {})
+            if robot_memory._initialized and embedding:
+                robot_memory.add_observation(embedding, metadata)
+            return
+        elif msg_type == "robot_event":
+            await bus.publish(f"robot.event.{msg.get('event', 'unknown')}", msg, endpoint="robot")
+        elif msg_type == "robot_voice_input":
+            transcript = msg.get("transcript", "")
+            if not transcript:
+                return
+            wake_verified = msg.get("wake_word_detected", False)
+            if not wake_verified:
+                accepted, transcript = robot_ctrl.check_wake_word(transcript)
+                if not accepted:
+                    return
+            result = await robot_ctrl.handle_voice_turn(transcript)
+            if result.get("say"):
+                await bridge.send({
+                    "type": "tts_speak",
+                    "text": result["say"],
+                    "voice": robot_cfg.get("voice", "am_adam"),
+                })
+
+    bridge.on_connected(_on_robot_connected)
+    bridge.on_disconnected(_on_robot_disconnected)
+    bridge.on_message(_on_robot_message)
+
+    # Use the same _intercom_bridge variable so existing robot endpoints work
+    _intercom_bridge = bridge
+    _ws_robot_bridge = bridge
+    robot_mod.set_transport(bridge)
+    await bridge.start()
+
+    print("[gateway] WebSocket robot transport ready (waiting for /ws/robot connection)")
+
+
+@app.websocket("/ws/robot")
+async def ws_robot(ws: WebSocket) -> None:
+    """WebSocket endpoint for direct robot/sim-adapter connections."""
+    if _ws_robot_bridge is None:
+        await ws.close(code=4003, reason="websocket transport not enabled")
+        return
+    await _ws_robot_bridge.handle_ws(ws)
 
 
 async def _start_intercom_transport() -> None:
@@ -1274,6 +1691,13 @@ async def _start_intercom_transport() -> None:
                 "sample_rate": msg.get("sample_rate", 16000),
             }, endpoint="robot")
             return
+        elif msg_type == "observation":
+            # Pre-computed embedding from Jetson/sim adapter — store directly
+            embedding = msg.get("embedding", [])
+            metadata = msg.get("metadata", {})
+            if robot_memory._initialized and embedding:
+                robot_memory.add_observation(embedding, metadata)
+            return
         elif msg_type == "robot_event":
             await bus.publish(f"robot.event.{msg.get('event', 'unknown')}", msg, endpoint="robot")
         elif msg_type == "robot_voice_input":
@@ -1344,26 +1768,55 @@ async def startup() -> None:
     if skills_loaded:
         print(f"[gateway] Robot skills loaded: {len(skills_loaded)} ({', '.join(s['name'] for s in skills_loaded)})")
     robot_cfg = config.section("robot")
+    # Initialize spatial memory
+    memory_cfg = robot_cfg.get("memory", {})
+    if memory_cfg.get("enabled", True):
+        try:
+            db_path = memory_cfg.get("db_path", "data/spatial_memory")
+            if not Path(db_path).is_absolute():
+                db_path = str(_ROOT / db_path)
+            robot_memory.init(
+                db_path,
+                memory_cfg.get("embedding_model", "ViT-B-32"),
+                memory_cfg.get("embedding_device", "mps"),
+            )
+            print(f"[gateway] Spatial memory: initialized")
+        except Exception as exc:
+            print(f"[gateway] WARNING: Spatial memory init failed: {exc}")
+            # Fall back to memory-only mode (no CLIP)
+            try:
+                robot_memory.init_memory_only(db_path)
+                print(f"[gateway] Spatial memory: initialized (no CLIP)")
+            except Exception:
+                print(f"[gateway] WARNING: Spatial memory completely failed")
     if robot_cfg.get("enabled"):
-        print(f"[gateway] Robot: {robot_cfg.get('model', 'unitree_g1')} (enabled)")
-        if robot_cfg.get("transport") == "intercom":
+        transport = robot_cfg.get("transport", "intercom")
+        print(f"[gateway] Robot: {robot_cfg.get('model', 'unitree_g1')} (enabled, transport={transport})")
+        if transport == "intercom":
             try:
                 await _start_intercom_transport()
             except Exception as exc:
                 print(f"[gateway] WARNING: Intercom transport failed to start: {exc}")
+        elif transport == "websocket":
+            try:
+                await _start_ws_transport()
+            except Exception as exc:
+                print(f"[gateway] WARNING: WebSocket transport failed to start: {exc}")
     else:
         print("[gateway] Robot: disabled")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global _intercom_bridge, _intercom_process
+    global _intercom_bridge, _intercom_process, _ws_robot_bridge
     if _intercom_bridge:
         await _intercom_bridge.stop()
         _intercom_bridge = None
     if _intercom_process:
         await _intercom_process.stop()
         _intercom_process = None
+    _ws_robot_bridge = None
+    robot_memory.shutdown()
 
 
 # ---------------------------------------------------------------------------
