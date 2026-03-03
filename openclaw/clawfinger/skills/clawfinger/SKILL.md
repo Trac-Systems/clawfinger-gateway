@@ -150,6 +150,23 @@ These tools interact with the robot endpoint via Intercom P2P transport. `clawfi
 | `clawfinger_robot_config_get` | Read robot config (shared + model-specific) |
 | `clawfinger_robot_config_set` | Update robot config (security keys blocked from agents) |
 
+### Robot Perception Tools
+
+| Tool | Capability | Description |
+|------|-----------|-------------|
+| `clawfinger_robot_snapshot` | `vision` | Capture a camera frame. Returns the image so the LLM can see what the robot sees. Optional `source` param (defaults to first camera). |
+| `clawfinger_robot_describe` | `vision` | Capture a frame and run VLM scene description on the Jetson. Returns description text + optional image. Optional `source` and `prompt` params. |
+
+### Robot Perception Slash Commands
+
+```
+/clawfinger robot perception                 — list available cameras + mics
+/clawfinger robot snapshot [source]          — capture camera snapshot
+/clawfinger robot describe [source] [prompt] — VLM scene description
+/clawfinger robot stream start|stop [source] — video stream control
+/clawfinger robot audio start|stop [source]  — audio monitor control
+```
+
 ### Future robot tools
 
 | Tool | Capability | Description |
@@ -161,8 +178,6 @@ These tools interact with the robot endpoint via Intercom P2P transport. `clawfi
 | `clawfinger_robot_place` | `manipulation` | Place object at target location |
 | `clawfinger_robot_hand_over` | `manipulation` | Extend hand, wait for take |
 | `clawfinger_robot_gesture` | `gesture` | Wave, point, nod, etc. |
-| `clawfinger_robot_look` | `vision` | Describe scene (camera + VLM) |
-| `clawfinger_robot_snapshot` | `vision` | Return camera frame |
 | `clawfinger_robot_speak` | `audio` | TTS on robot speaker |
 | `clawfinger_robot_listen` | `audio` | Mic capture + ASR |
 | `clawfinger_robot_task` | (any) | Submit compound task (async) |
@@ -250,6 +265,11 @@ All gateway operations are also available as direct `/clawfinger` subcommands th
 /clawfinger robot project cancel      — cancel running project
 /clawfinger robot takeover            — take control of robot
 /clawfinger robot release             — release robot control
+/clawfinger robot perception          — list perception sources
+/clawfinger robot snapshot [source]   — capture camera snapshot
+/clawfinger robot describe [source] [prompt] — VLM scene description
+/clawfinger robot stream start|stop [source] — video stream control
+/clawfinger robot audio start|stop [source]  — audio monitor control
 ```
 
 ### Robot Events
