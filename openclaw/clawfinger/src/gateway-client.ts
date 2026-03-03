@@ -199,4 +199,58 @@ export class GatewayClient {
   async robotAudioMonitorStop(source?: string): Promise<any> {
     return this.post("/api/robot/audio/monitor/stop", source ? { source } : {});
   }
+
+  // --- Spatial memory ---
+
+  async memoryListPersons(): Promise<any> {
+    return this.get("/api/robot/memory/persons");
+  }
+
+  async memoryAddPerson(name: string, description?: string, referenceImages?: string[]): Promise<any> {
+    return this.post("/api/robot/memory/persons", {
+      name, description: description || "", reference_images: referenceImages || [],
+    });
+  }
+
+  async memoryDeletePerson(id: string): Promise<any> {
+    return this.del(`/api/robot/memory/persons/${id}`);
+  }
+
+  async memoryListObjects(): Promise<any> {
+    return this.get("/api/robot/memory/objects");
+  }
+
+  async memoryAddObject(name: string, description?: string, referenceImages?: string[]): Promise<any> {
+    return this.post("/api/robot/memory/objects", {
+      name, description: description || "", reference_images: referenceImages || [],
+    });
+  }
+
+  async memoryDeleteObject(id: string): Promise<any> {
+    return this.del(`/api/robot/memory/objects/${id}`);
+  }
+
+  async memoryListRooms(): Promise<any> {
+    return this.get("/api/robot/memory/rooms");
+  }
+
+  async memoryAddRoom(name: string, description?: string): Promise<any> {
+    return this.post("/api/robot/memory/rooms", { name, description: description || "" });
+  }
+
+  async memoryDeleteRoom(id: string): Promise<any> {
+    return this.del(`/api/robot/memory/rooms/${id}`);
+  }
+
+  async memoryQuery(queryType: string, params: Record<string, unknown>): Promise<any> {
+    return this.post("/api/robot/memory/query", { type: queryType, ...params });
+  }
+
+  async memoryStats(): Promise<any> {
+    return this.get("/api/robot/memory/stats");
+  }
+
+  async memoryIngestObservation(embedding?: number[], metadata?: Record<string, unknown>): Promise<any> {
+    return this.post("/api/robot/memory/observations", { embedding, metadata: metadata || {} });
+  }
 }

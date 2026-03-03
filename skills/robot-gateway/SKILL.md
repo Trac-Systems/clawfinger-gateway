@@ -482,6 +482,52 @@ REST endpoints for accessing robot cameras and microphones. Camera sources and m
 
 ---
 
+## Spatial Memory
+
+The gateway includes a persistent spatial memory subsystem for the robot. It stores what the robot has seen, where objects and persons were last observed, and the layout of known rooms/zones.
+
+### REST Endpoints (19 total)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/robot/memory/stats` | DB statistics: entity counts, observation counts, DB size |
+| `GET` | `/api/robot/memory/persons` | List all known persons |
+| `POST` | `/api/robot/memory/persons` | Teach a person (name, description, optional photos) |
+| `GET` | `/api/robot/memory/persons/{id}` | Get person record by ID |
+| `PUT` | `/api/robot/memory/persons/{id}` | Update person record |
+| `DELETE` | `/api/robot/memory/persons/{id}` | Delete person record |
+| `GET` | `/api/robot/memory/objects` | List all known objects |
+| `POST` | `/api/robot/memory/objects` | Teach an object (name, description, optional photos) |
+| `GET` | `/api/robot/memory/objects/{id}` | Get object record by ID |
+| `PUT` | `/api/robot/memory/objects/{id}` | Update object record |
+| `DELETE` | `/api/robot/memory/objects/{id}` | Delete object record |
+| `GET` | `/api/robot/memory/rooms` | List all known rooms/zones |
+| `POST` | `/api/robot/memory/rooms` | Define a room/zone (name, description) |
+| `GET` | `/api/robot/memory/rooms/{id}` | Get room record by ID |
+| `PUT` | `/api/robot/memory/rooms/{id}` | Update room record |
+| `DELETE` | `/api/robot/memory/rooms/{id}` | Delete room record |
+| `POST` | `/api/robot/memory/observations` | Record a new observation (entity seen at location/time) |
+| `GET` | `/api/robot/memory/observations` | List observations with optional filters (entity_id, room, type, since) |
+| `POST` | `/api/robot/memory/query` | Natural language query with filters (room, type, time range) |
+
+### Query Types
+
+| Query type | Body | Description |
+|------------|------|-------------|
+| `text` | `{"type": "text", "text": "where are my keys?"}` | Natural language search — returns matching entities + last seen location |
+| `entity` | `{"type": "entity", "entity_id": "..."}` | All observations for a specific entity |
+| `room` | `{"type": "room", "room": "kitchen"}` | All entities last seen in a room |
+| `recent` | `{"type": "recent", "since": "2026-03-01T00:00:00Z"}` | All observations since timestamp |
+
+### Usage Notes
+
+- The robot writes observations automatically as it navigates and uses VLM scene descriptions
+- Agents can also write observations directly via the REST API
+- Reference photos are stored as base64 in the DB and used for visual re-identification on the robot
+- The `clawfinger_memory_*` OpenClaw tools wrap these endpoints — see [openclaw-clawfinger/SKILL.md](../openclaw-clawfinger/SKILL.md)
+
+---
+
 ## Safety Limits
 
 Gateway-side command validator runs before every command dispatch:

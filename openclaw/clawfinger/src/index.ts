@@ -768,6 +768,148 @@ export default function register(api: OpenClawPluginApi) {
     },
   });
 
+  // --- Spatial memory tools ---
+
+  api.registerTool({
+    name: "clawfinger_memory_teach_person",
+    label: "Clawfinger Teach Person",
+    description: "Teach the robot to recognize a person by name and optional description.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Person name" }),
+      description: Type.Optional(Type.String({ description: "Description of the person" })),
+    }),
+    async execute(_id: string, params: { name: string; description?: string }) {
+      const result = await client.memoryAddPerson(params.name, params.description);
+      return {
+        content: [{ type: "text", text: `Person added: ${result.name} (id: ${result.id})` }],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_memory_teach_object",
+    label: "Clawfinger Teach Object",
+    description: "Teach the robot to recognize an object by name and optional description.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Object name" }),
+      description: Type.Optional(Type.String({ description: "Description of the object" })),
+    }),
+    async execute(_id: string, params: { name: string; description?: string }) {
+      const result = await client.memoryAddObject(params.name, params.description);
+      return {
+        content: [{ type: "text", text: `Object added: ${result.name} (id: ${result.id})` }],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_memory_teach_room",
+    label: "Clawfinger Teach Room",
+    description: "Define a room or zone for spatial memory.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Room name" }),
+      description: Type.Optional(Type.String({ description: "Description of the room" })),
+    }),
+    async execute(_id: string, params: { name: string; description?: string }) {
+      const result = await client.memoryAddRoom(params.name, params.description);
+      return {
+        content: [{ type: "text", text: `Room added: ${result.name} (id: ${result.id})` }],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_memory_query",
+    label: "Clawfinger Memory Query",
+    description: "Search spatial memory with natural language. Supports text search, person sightings, object sightings, room activity, and nearby queries.",
+    parameters: Type.Object({
+      type: Type.Union([
+        Type.Literal("text"),
+        Type.Literal("person_sightings"),
+        Type.Literal("object_sightings"),
+        Type.Literal("room_activity"),
+        Type.Literal("nearby"),
+      ], { description: "Query type", default: "text" }),
+      text: Type.Optional(Type.String({ description: "Search text (for text queries)" })),
+      person_id: Type.Optional(Type.String({ description: "Person ID (for person_sightings)" })),
+      object_id: Type.Optional(Type.String({ description: "Object ID (for object_sightings)" })),
+      room: Type.Optional(Type.String({ description: "Room name (for room_activity or filter)" })),
+      n_results: Type.Optional(Type.Number({ description: "Max results", default: 10 })),
+    }),
+    async execute(_id: string, params: any) {
+      const body: any = { type: params.type, n_results: params.n_results || 10 };
+      if (params.text) body.text = params.text;
+      if (params.person_id) body.person_id = params.person_id;
+      if (params.object_id) body.object_id = params.object_id;
+      if (params.room) body.room = params.room;
+      if (params.room && params.type !== "room_activity") {
+        body.filters = { room: params.room };
+      }
+      const result = await client.memoryQuery(params.type, body);
+      const lines = [`Found ${result.count} results:`];
+      for (const r of (result.results || []).slice(0, 10)) {
+        lines.push(`  [${r.entity_type || "scene"}] ${r.entity_name || "--"} in ${r.room || "--"}: ${(r.description || r.document || "").slice(0, 80)}`);
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_memory_list",
+    label: "Clawfinger Memory List",
+    description: "List known entities by type (persons, objects, rooms, routines).",
+    parameters: Type.Object({
+      entity_type: Type.Union([
+        Type.Literal("persons"),
+        Type.Literal("objects"),
+        Type.Literal("rooms"),
+        Type.Literal("routines"),
+      ], { description: "Entity type to list" }),
+    }),
+    async execute(_id: string, params: { entity_type: string }) {
+      let items: any[];
+      if (params.entity_type === "persons") items = await client.memoryListPersons();
+      else if (params.entity_type === "objects") items = await client.memoryListObjects();
+      else if (params.entity_type === "rooms") items = await client.memoryListRooms();
+      else items = [];
+      if (!items.length) return { content: [{ type: "text", text: `No ${params.entity_type} found.` }], details: { count: 0 } };
+      const lines = items.map((i: any) => `  ${i.name || i.id}${i.description ? ` — ${i.description}` : ""}${i.schedule ? ` (${i.schedule})` : ""}`);
+      return {
+        content: [{ type: "text", text: `${params.entity_type} (${items.length}):\n${lines.join("\n")}` }],
+        details: { count: items.length, items },
+      };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_memory_stats",
+    label: "Clawfinger Memory Stats",
+    description: "Get spatial memory database statistics.",
+    parameters: Type.Object({}),
+    async execute() {
+      const stats = await client.memoryStats();
+      const lines = [
+        `Initialized: ${stats.initialized}`,
+        `Persons: ${stats.persons || 0}`,
+        `Objects: ${stats.objects || 0}`,
+        `Rooms: ${stats.rooms || 0}`,
+        `Routines: ${stats.routines || 0}`,
+        `Observations: ${stats.observations || 0}`,
+        `CLIP loaded: ${stats.clip_loaded || false}`,
+      ];
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: stats,
+      };
+    },
+  });
+
   // --- Slash command ---
 
   const HELP_TEXT = [
@@ -806,6 +948,11 @@ export default function register(api: OpenClawPluginApi) {
     "/clawfinger robot describe [source] [prompt] — VLM scene description",
     "/clawfinger robot stream start|stop [source] — video stream control",
     "/clawfinger robot audio start|stop [source]  — audio monitor control",
+    "/clawfinger robot memory stats               — spatial memory stats",
+    "/clawfinger robot memory persons             — list known persons",
+    "/clawfinger robot memory objects             — list known objects",
+    "/clawfinger robot memory rooms               — list known rooms",
+    "/clawfinger robot memory query <text>        — search spatial memory",
   ].join("\n");
 
   api.registerCommand({
@@ -1063,7 +1210,38 @@ export default function register(api: OpenClawPluginApi) {
             }
             return { text: "Usage: /clawfinger robot audio start|stop [source]" };
           }
-          return { text: "Usage: /clawfinger robot status|command|skills|skill|project|takeover|release|perception|snapshot|describe|stream|audio" };
+          if (sub === "memory") {
+            const memSub = (tokens[2] || "stats").toLowerCase();
+            if (memSub === "stats") {
+              const stats = await client.memoryStats();
+              return { text: `Spatial Memory:\n  Persons: ${stats.persons || 0}\n  Objects: ${stats.objects || 0}\n  Rooms: ${stats.rooms || 0}\n  Routines: ${stats.routines || 0}\n  Observations: ${stats.observations || 0}\n  CLIP: ${stats.clip_loaded ? "loaded" : "not loaded"}` };
+            }
+            if (memSub === "persons") {
+              const persons = await client.memoryListPersons();
+              if (!persons.length) return { text: "No persons in spatial memory." };
+              return { text: `Persons (${persons.length}):\n${persons.map((p: any) => `  ${p.name}${p.description ? ` — ${p.description}` : ""} (${p.image_count || 0} photos)`).join("\n")}` };
+            }
+            if (memSub === "objects") {
+              const objects = await client.memoryListObjects();
+              if (!objects.length) return { text: "No objects in spatial memory." };
+              return { text: `Objects (${objects.length}):\n${objects.map((o: any) => `  ${o.name}${o.description ? ` — ${o.description}` : ""}`).join("\n")}` };
+            }
+            if (memSub === "rooms") {
+              const rooms = await client.memoryListRooms();
+              if (!rooms.length) return { text: "No rooms in spatial memory." };
+              return { text: `Rooms (${rooms.length}):\n${rooms.map((r: any) => `  ${r.name}${r.description ? ` — ${r.description}` : ""}`).join("\n")}` };
+            }
+            if (memSub === "query") {
+              const queryText = tokens.slice(3).join(" ");
+              if (!queryText) return { text: "Usage: /clawfinger robot memory query <text>" };
+              const result = await client.memoryQuery("text", { text: queryText, n_results: 10 });
+              if (!result.results?.length) return { text: "No results found." };
+              const lines = result.results.slice(0, 10).map((r: any) => `  [${r.entity_type || "scene"}] ${r.entity_name || "--"} in ${r.room || "--"}: ${(r.description || "").slice(0, 60)}`);
+              return { text: `Results (${result.count}):\n${lines.join("\n")}` };
+            }
+            return { text: "Usage: /clawfinger robot memory stats|persons|objects|rooms|query <text>" };
+          }
+          return { text: "Usage: /clawfinger robot status|command|skills|skill|project|takeover|release|perception|snapshot|describe|stream|audio|memory" };
         }
 
         // --- instructions <session_id> <text> ---

@@ -402,6 +402,28 @@ For real-time event-driven automation (reacting to `turn.complete`, `agent.takeo
 
 ---
 
+## Spatial Memory Operations
+
+```bash
+# List known persons
+curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/memory/persons" | jq .
+
+# Teach a person
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/memory/persons" \
+  -d '{"name": "Markus", "description": "Owner"}' | jq .
+
+# Query spatial memory
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/memory/query" \
+  -d '{"type": "text", "text": "where are my keys?"}' | jq .
+
+# Memory stats
+curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/memory/stats" | jq .
+```
+
 ## Robot Skill & Project Operations
 
 ```bash

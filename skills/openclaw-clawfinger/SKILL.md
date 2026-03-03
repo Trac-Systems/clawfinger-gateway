@@ -308,6 +308,17 @@ For full API documentation, endpoint details, and config options, see the [Phone
 
 ---
 
+## Spatial Memory Tools
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_memory_teach_person` | Teach person by name + optional reference photos |
+| `clawfinger_memory_teach_object` | Teach object by name + optional reference photos |
+| `clawfinger_memory_teach_room` | Define room/zone |
+| `clawfinger_memory_query` | Natural language query with filters (room, type, time) |
+| `clawfinger_memory_list` | List known entities by type |
+| `clawfinger_memory_stats` | DB statistics |
+
 ## Robot Skill & Project Tools
 
 | Tool | Description |

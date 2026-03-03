@@ -88,10 +88,16 @@ In `~/.openclaw/openclaw.json`:
 | `clawfinger_robot_turn_wait` | Wait for user to speak to robot during takeover |
 | `clawfinger_robot_turn_reply` | Send text reply (spoken on robot) + optional commands |
 | `clawfinger_robot_release` | Release robot control back to local LLM |
+| `clawfinger_memory_teach_person` | Teach person by name + optional reference photos |
+| `clawfinger_memory_teach_object` | Teach object by name + optional reference photos |
+| `clawfinger_memory_teach_room` | Define room/zone |
+| `clawfinger_memory_query` | Natural language query with filters (room, type, time) |
+| `clawfinger_memory_list` | List known entities by type |
+| `clawfinger_memory_stats` | DB statistics |
 
 ## Slash Commands
 
-`/clawfinger status`, `/clawfinger dial <number>`, `/clawfinger hangup`, `/clawfinger inject <text>`, `/clawfinger takeover <sid>`, `/clawfinger release <sid>`, `/clawfinger end <sid>`, `/clawfinger context get|set|clear <sid>`, `/clawfinger config call|tts|llm`, `/clawfinger instructions <text>`, `/clawfinger robot perception`, `/clawfinger robot snapshot [source]`, `/clawfinger robot describe [source] [prompt]`, `/clawfinger robot stream start|stop [source]`, `/clawfinger robot audio start|stop [source]`.
+`/clawfinger status`, `/clawfinger dial <number>`, `/clawfinger hangup`, `/clawfinger inject <text>`, `/clawfinger takeover <sid>`, `/clawfinger release <sid>`, `/clawfinger end <sid>`, `/clawfinger context get|set|clear <sid>`, `/clawfinger config call|tts|llm`, `/clawfinger instructions <text>`, `/clawfinger robot perception`, `/clawfinger robot snapshot [source]`, `/clawfinger robot describe [source] [prompt]`, `/clawfinger robot stream start|stop [source]`, `/clawfinger robot audio start|stop [source]`, `/clawfinger robot memory stats`, `/clawfinger robot memory persons`, `/clawfinger robot memory objects`, `/clawfinger robot memory rooms`, `/clawfinger robot memory query <text>`.
 
 ## Related Skills
 

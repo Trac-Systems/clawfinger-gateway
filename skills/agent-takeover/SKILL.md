@@ -622,3 +622,17 @@ Same architectural pattern as phone takeover but for the robot endpoint. Agents 
 | `clawfinger_robot_release` | Release robot control back to local LLM |
 
 For robot skills and projects, see [robot-gateway/SKILL.md](../robot-gateway/SKILL.md).
+
+## Spatial Memory in Robot Takeover
+
+During robot takeover, agents can enrich their responses with context from the spatial memory subsystem. Before or between turns, query the memory DB to retrieve known locations of objects, persons, and rooms:
+
+```
+1. clawfinger_robot_takeover              → take control
+2. clawfinger_robot_turn_wait             → user asks "where are my keys?"
+3. clawfinger_memory_query                → query memory: "keys" (returns last seen location + timestamp)
+4. clawfinger_robot_turn_reply            → agent answers with location context
+5. clawfinger_robot_release               → hand back to local LLM
+```
+
+Memory queries are non-blocking REST calls and add negligible latency between `turn_wait` and `turn_reply`. See [robot-gateway/SKILL.md](../robot-gateway/SKILL.md) for the full spatial memory API reference.
