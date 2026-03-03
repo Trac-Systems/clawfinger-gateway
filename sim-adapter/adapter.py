@@ -502,30 +502,39 @@ async def state_report_loop(sim: SimBackend, gw: GatewayClient, hz: float = 2.0)
             print(f"[adapter] First state report (pose={pose})", flush=True)
 
 
-async def sim_step_loop(sim: SimBackend, hz: float = 50.0):
-    """Step the simulation at a fixed rate."""
+def sim_step_main_loop(sim: SimBackend, hz: float = 50.0):
+    """Step the simulation in the MAIN thread at a fixed rate.
+
+    CRITICAL: Kit's physics engine and async engine are both bound to the
+    main thread.  sim.step() → env.step() → Kit sim.step() tries to run
+    Kit's own asyncio loop, which crashes if called inside Python's asyncio
+    event loop, and deadlocks if called from a thread pool thread.
+
+    Solution: run sim stepping in the main thread (where Kit was initialized),
+    and run Python asyncio in a background thread for WS / camera / state.
+    """
     interval = 1.0 / hz
-    loop = asyncio.get_running_loop()
     step_count = 0
+    print(f"[adapter] Sim step loop starting (main thread, {hz} Hz)", flush=True)
     while True:
         t0 = time.time()
         try:
-            await loop.run_in_executor(None, sim.step)
+            sim.step()
         except Exception as exc:
             print(f"[adapter] sim step error: {exc}", flush=True)
-            await asyncio.sleep(1.0)
+            time.sleep(1.0)
             continue
         step_count += 1
         if step_count == 1:
             print(f"[adapter] First sim step completed ({time.time()-t0:.2f}s)", flush=True)
         elif step_count == 100:
             print(f"[adapter] 100 sim steps done", flush=True)
+        elif step_count % 1000 == 0:
+            print(f"[adapter] {step_count} sim steps", flush=True)
         elapsed = time.time() - t0
         remaining = interval - elapsed
         if remaining > 0:
-            await asyncio.sleep(remaining)
-        else:
-            await asyncio.sleep(0)
+            time.sleep(remaining)
 
 
 # ---------------------------------------------------------------------------
@@ -550,22 +559,20 @@ def parse_args():
     return p.parse_args()
 
 
-async def run(args, sim: SimBackend):
-    """Run the adapter event loop.
+async def run_async(args, sim: SimBackend):
+    """Run async tasks (WS, camera, state) in a background thread's event loop.
 
-    *sim* must already be created and init'd BEFORE entering asyncio.run().
-    This is critical for the Isaac backend because Isaac Sim's Kit kernel
-    has its own event loop that conflicts with asyncio.run().
+    sim.step() is NOT called here — it runs in the main thread via
+    sim_step_main_loop() because Kit requires the main thread.
     """
     cmd_handler = CommandHandler(sim)
     gw = GatewayClient(args.gateway, args.token)
     gw.on_command(cmd_handler.handle)
 
-    print(f"[adapter] Starting (backend={args.backend})", flush=True)
+    print(f"[adapter] Async tasks starting (backend={args.backend})", flush=True)
 
     tasks = [
         asyncio.create_task(gw.connect_forever()),
-        asyncio.create_task(sim_step_loop(sim, hz=args.sim_hz)),
         asyncio.create_task(camera_stream_loop(sim, gw, fps=args.camera_fps)),
         asyncio.create_task(state_report_loop(sim, gw, hz=args.state_hz)),
     ]
@@ -577,13 +584,12 @@ async def run(args, sim: SimBackend):
     except KeyboardInterrupt:
         pass
     finally:
-        print("[adapter] Shutting down...", flush=True)
+        print("[adapter] Async shutdown...", flush=True)
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await gw.close()
-        sim.shutdown()
-        print("[adapter] Done", flush=True)
+        print("[adapter] Async done", flush=True)
 
 
 def _create_isaac_backend(args):
@@ -657,26 +663,51 @@ def _create_isaac_backend(args):
 
 def main():
     args = parse_args()
-    logger.info("Clawfinger Sim Adapter")
-    logger.info("  Gateway:  %s", args.gateway)
-    logger.info("  Backend:  %s", args.backend)
+    print("[adapter] Clawfinger Sim Adapter", flush=True)
+    print(f"[adapter]   Gateway:  {args.gateway}", flush=True)
+    print(f"[adapter]   Backend:  {args.backend}", flush=True)
 
-    # Create and init backend BEFORE entering asyncio.run().
-    # This is critical for Isaac backend: AppLauncher + env creation
-    # must happen outside any asyncio event loop.
+    # Create and init backend BEFORE starting any event loops.
+    # Critical for Isaac: AppLauncher + env creation must happen in the
+    # main thread, outside any asyncio event loop.
     if args.backend == "mock":
         sim = MockSim()
     elif args.backend == "isaac":
-        logger.info("  Task:     %s", args.task)
-        logger.info("  Headless: %s", args.headless)
+        print(f"[adapter]   Task:     {args.task}", flush=True)
+        print(f"[adapter]   Headless: {args.headless}", flush=True)
         sim = _create_isaac_backend(args)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
 
     sim.init()
-    logger.info("Backend initialized, starting event loop...")
+    print("[adapter] Backend initialized", flush=True)
 
-    asyncio.run(run(args, sim))
+    if args.backend == "isaac":
+        # Isaac backend: main thread runs sim stepping (Kit requires it),
+        # asyncio runs in a background thread for WS/camera/state.
+        import threading
+
+        loop = asyncio.new_event_loop()
+
+        def run_asyncio():
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(run_async(args, sim))
+
+        async_thread = threading.Thread(target=run_asyncio, daemon=True)
+        async_thread.start()
+
+        try:
+            sim_step_main_loop(sim, hz=args.sim_hz)
+        except KeyboardInterrupt:
+            print("[adapter] Interrupted", flush=True)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            async_thread.join(timeout=5)
+            sim.shutdown()
+            print("[adapter] Done", flush=True)
+    else:
+        # Mock backend: everything runs in asyncio (no Kit constraints)
+        asyncio.run(run_async(args, sim))
 
 
 if __name__ == "__main__":
