@@ -70,12 +70,24 @@ In `~/.openclaw/openclaw.json`:
 | `clawfinger_call_config_get` | Read call policy settings |
 | `clawfinger_call_config_set` | Update call policy settings |
 
-## Robot Perception Tools
+## Robot Tools
 
 | Tool | Description |
 |------|-------------|
+| `clawfinger_robot_status` | Robot status: connection state, transport info, model, capabilities |
+| `clawfinger_robot_command` | Send a command to the connected robot via Intercom transport |
+| `clawfinger_robot_config_get` | Read robot config (shared + model-specific) |
+| `clawfinger_robot_config_set` | Update robot config (security keys blocked from agents) |
 | `clawfinger_robot_snapshot` | Capture a camera frame from the robot. Params: `source?`, `width?`, `height?`, `quality?`. Returns image. |
 | `clawfinger_robot_describe` | VLM scene description from robot camera. Params: `source?`, `prompt?`. Returns text. |
+| `clawfinger_robot_skill_list` | List available robot skills (slow + fast path) |
+| `clawfinger_robot_skill_topic` | Read a skill topic's knowledge content |
+| `clawfinger_robot_project_status` | Current project execution state |
+| `clawfinger_robot_project_cancel` | Cancel running robot project |
+| `clawfinger_robot_takeover` | Take full control of robot (voice + commands) |
+| `clawfinger_robot_turn_wait` | Wait for user to speak to robot during takeover |
+| `clawfinger_robot_turn_reply` | Send text reply (spoken on robot) + optional commands |
+| `clawfinger_robot_release` | Release robot control back to local LLM |
 
 ## Slash Commands
 

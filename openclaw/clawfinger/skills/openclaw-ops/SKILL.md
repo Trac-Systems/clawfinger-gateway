@@ -341,7 +341,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/perception" | jq .
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "$GW/api/robot/camera/snapshot" \
-  -d '{"source": "head_rgb", "width": 640, "height": 480}' --output snapshot.jpg
+  -d '{"source": "head_rgb", "width": 640, "height": 480}' | jq .
 ```
 
 ### VLM scene description
@@ -379,13 +379,13 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "$GW/api/robot/audio/monitor/start" \
-  -d '{"source": "head_mic", "sample_rate": 16000, "channels": 1}' | jq .
+  -d '{"source": "mic_array", "sample_rate": 16000, "channels": 1}' | jq .
 
 # Stop mic monitoring
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "$GW/api/robot/audio/monitor/stop" \
-  -d '{"source": "head_mic"}' | jq .
+  -d '{"source": "mic_array"}' | jq .
 ```
 
 ## Combining with OpenClaw Skills

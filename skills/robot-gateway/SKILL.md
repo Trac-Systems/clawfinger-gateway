@@ -171,6 +171,26 @@ Robot config lives in the `robot` section of `config.json`:
 | `robot.unitree_g1.enable_low_level` | bool | `false` | Enable low-level joint control (dangerous) |
 | `robot.unitree_g1.wifi_networks` | list | `[]` | Pre-configured WiFi SSIDs |
 
+### Perception config keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `robot.camera.width` | int | `640` | Default snapshot/stream width |
+| `robot.camera.height` | int | `480` | Default snapshot/stream height |
+| `robot.camera.quality` | int | `50` | JPEG quality (1-100) |
+| `robot.camera.stream_fps` | int | `5` | Default video stream FPS |
+| `robot.audio_monitor.sample_rate` | int | `16000` | Audio sample rate (Hz) |
+| `robot.audio_monitor.channels` | int | `1` | Audio channels |
+| `robot.audio_monitor.chunk_ms` | int | `100` | Audio chunk duration (ms) |
+
+### Intercom transport limits
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `robot.intercom_limits.max_message_kb` | int | `256` | Max message size (KB). Raised for video frame streaming. |
+| `robot.intercom_limits.pow` | int | `0` | Proof-of-work difficulty (0 = disabled for private robot channel) |
+| `robot.intercom_limits.rate_limit` | int | `0` | Messages/sec limit (0 = unlimited) |
+
 ## API Endpoints
 
 ### Config
@@ -413,7 +433,7 @@ Agents (OpenClaw) can take full control of the robot endpoint. Text-only: agents
 
 ## Perception (Camera + Audio)
 
-REST endpoints for accessing robot cameras and microphones. Camera sources and mic sources are defined in the robot model defaults (e.g., G1 has `head_rgb`, `head_depth`, `head_stereo`; mic `head_mic`).
+REST endpoints for accessing robot cameras and microphones. Camera sources and mic sources are defined in the robot model defaults (e.g., G1 has `head_rgb`, `head_depth`; mic `mic_array`).
 
 ### REST Endpoints
 

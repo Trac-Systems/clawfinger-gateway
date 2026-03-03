@@ -246,6 +246,13 @@ These tools interact with the robot endpoint via Intercom P2P transport. `clawfi
 | `clawfinger_robot_config_get` | Read robot config (shared + model-specific) |
 | `clawfinger_robot_config_set` | Update robot config (security keys blocked from agents) |
 
+### Robot Perception Tools
+
+| Tool | Description |
+|------|-------------|
+| `clawfinger_robot_snapshot` | Capture a camera frame from the robot. Optional params: `source`, `width`, `height`, `quality`. Returns image data. |
+| `clawfinger_robot_describe` | VLM scene description from robot camera. Optional params: `source`, `prompt`. Returns text description of what the camera sees. |
+
 ### Future robot tools
 
 | Tool | Capability | Description |
@@ -257,8 +264,6 @@ These tools interact with the robot endpoint via Intercom P2P transport. `clawfi
 | `clawfinger_robot_place` | `manipulation` | Place object at target location |
 | `clawfinger_robot_hand_over` | `manipulation` | Extend hand, wait for take |
 | `clawfinger_robot_gesture` | `gesture` | Wave, point, nod, etc. |
-| `clawfinger_robot_look` | `vision` | Describe scene (camera + VLM) |
-| `clawfinger_robot_snapshot` | `vision` | Return camera frame |
 | `clawfinger_robot_speak` | `audio` | TTS on robot speaker |
 | `clawfinger_robot_listen` | `audio` | Mic capture + ASR |
 | `clawfinger_robot_task` | (any) | Submit compound task (async, validated against capabilities) |
