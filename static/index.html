@@ -575,6 +575,87 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
       <div id="robot-config-feedback" style="font-size:11px;margin-top:4px"></div>
     </div>
   </div>
+
+  <!-- Spatial Memory -->
+  <div class="panel" style="grid-column:1/-1">
+    <div class="panel-head">Spatial Memory <span id="mem-stats-badge" class="badge" style="background:rgba(139,148,158,0.2);color:var(--fg2)">--</span></div>
+    <div class="panel-body" style="max-height:none">
+      <div class="row" style="gap:4px;margin-bottom:8px;flex-wrap:wrap">
+        <button class="secondary mem-tab-btn active" onclick="switchMemTab('persons')" style="font-size:11px;padding:4px 10px">Persons</button>
+        <button class="secondary mem-tab-btn" onclick="switchMemTab('objects')" style="font-size:11px;padding:4px 10px">Objects</button>
+        <button class="secondary mem-tab-btn" onclick="switchMemTab('rooms')" style="font-size:11px;padding:4px 10px">Rooms</button>
+        <button class="secondary mem-tab-btn" onclick="switchMemTab('routines')" style="font-size:11px;padding:4px 10px">Routines</button>
+        <button class="secondary mem-tab-btn" onclick="switchMemTab('query')" style="font-size:11px;padding:4px 10px">Query</button>
+      </div>
+
+      <!-- Persons sub-tab -->
+      <div id="mem-tab-persons" class="mem-tab">
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input id="mem-person-name" placeholder="Name" style="flex:1">
+          <input id="mem-person-desc" placeholder="Description (optional)" style="flex:2">
+        </div>
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input type="file" id="mem-person-photo" accept="image/*" style="font-size:11px;flex:1">
+          <button onclick="addMemPerson()">Add Person</button>
+        </div>
+        <div id="mem-persons-list" style="max-height:200px;overflow-y:auto"><div class="empty">No persons.</div></div>
+      </div>
+
+      <!-- Objects sub-tab -->
+      <div id="mem-tab-objects" class="mem-tab" style="display:none">
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input id="mem-object-name" placeholder="Name" style="flex:1">
+          <input id="mem-object-desc" placeholder="Description (optional)" style="flex:2">
+        </div>
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input type="file" id="mem-object-photo" accept="image/*" style="font-size:11px;flex:1">
+          <button onclick="addMemObject()">Add Object</button>
+        </div>
+        <div id="mem-objects-list" style="max-height:200px;overflow-y:auto"><div class="empty">No objects.</div></div>
+      </div>
+
+      <!-- Rooms sub-tab -->
+      <div id="mem-tab-rooms" class="mem-tab" style="display:none">
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input id="mem-room-name" placeholder="Room name" style="flex:1">
+          <input id="mem-room-desc" placeholder="Description (optional)" style="flex:2">
+          <button onclick="addMemRoom()">Add Room</button>
+        </div>
+        <div id="mem-rooms-list" style="max-height:200px;overflow-y:auto"><div class="empty">No rooms.</div></div>
+      </div>
+
+      <!-- Routines sub-tab -->
+      <div id="mem-tab-routines" class="mem-tab" style="display:none">
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input id="mem-routine-name" placeholder="Routine name" style="flex:1">
+          <input id="mem-routine-schedule" placeholder="Schedule (e.g. daily 08:00)" style="flex:1">
+        </div>
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input id="mem-routine-desc" placeholder="Description" style="flex:2">
+          <button onclick="addMemRoutine()">Add Routine</button>
+        </div>
+        <div id="mem-routines-list" style="max-height:200px;overflow-y:auto"><div class="empty">No routines.</div></div>
+      </div>
+
+      <!-- Query sub-tab -->
+      <div id="mem-tab-query" class="mem-tab" style="display:none">
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <input id="mem-query-text" placeholder="What are you looking for?" style="flex:2">
+          <select id="mem-query-room" style="font-size:12px">
+            <option value="">Any room</option>
+          </select>
+          <select id="mem-query-type" style="font-size:12px">
+            <option value="">Any type</option>
+            <option value="person">Person</option>
+            <option value="object">Object</option>
+            <option value="scene">Scene</option>
+          </select>
+          <button onclick="queryMemory()">Search</button>
+        </div>
+        <div id="mem-query-results" style="max-height:300px;overflow-y:auto"><div class="empty">Run a search to see results.</div></div>
+      </div>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -666,6 +747,12 @@ function handleEvent(evt) {
     setRobotDisconnected();
   } else if (t === 'robot.scene_description') {
     document.getElementById('robot-scene-desc').textContent = d.description || '';
+  } else if (t && t.startsWith('robot.memory.')) {
+    loadMemoryStats();
+    if (t.includes('person')) loadMemPersons();
+    else if (t.includes('object')) loadMemObjects();
+    else if (t.includes('room')) loadMemRooms();
+    else if (t.includes('routine')) loadMemRoutines();
   }
 }
 
@@ -1509,6 +1596,204 @@ document.getElementById('robot-max-speed')?.addEventListener('input', function()
   document.getElementById('robot-max-speed-val').textContent = this.value;
 });
 
+// --- Spatial Memory ---
+let _memTab = 'persons';
+function switchMemTab(tab) {
+  _memTab = tab;
+  document.querySelectorAll('.mem-tab').forEach(el => el.style.display = 'none');
+  document.getElementById('mem-tab-' + tab).style.display = '';
+  document.querySelectorAll('.mem-tab-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  if (tab === 'persons') loadMemPersons();
+  else if (tab === 'objects') loadMemObjects();
+  else if (tab === 'rooms') loadMemRooms();
+  else if (tab === 'routines') loadMemRoutines();
+}
+
+async function loadMemoryStats() {
+  try {
+    const r = await fetch('/api/robot/memory/stats');
+    const d = await r.json();
+    if (!d.initialized) { document.getElementById('mem-stats-badge').textContent = 'off'; return; }
+    const ent = (d.persons || 0) + (d.objects || 0) + (d.rooms || 0);
+    document.getElementById('mem-stats-badge').textContent = ent + ' entities | ' + (d.observations || 0) + ' obs';
+    // Populate room filter
+    const sel = document.getElementById('mem-query-room');
+    const cur = sel.value;
+    const rooms = await fetch('/api/robot/memory/rooms').then(r2 => r2.json());
+    sel.innerHTML = '<option value="">Any room</option>';
+    rooms.forEach(rm => { const o = document.createElement('option'); o.value = rm.name; o.textContent = rm.name; sel.appendChild(o); });
+    if (cur) sel.value = cur;
+  } catch(e) {}
+}
+
+async function loadMemPersons() {
+  try {
+    const r = await fetch('/api/robot/memory/persons');
+    const persons = await r.json();
+    const el = document.getElementById('mem-persons-list');
+    if (!persons.length) { el.innerHTML = '<div class="empty">No persons.</div>'; return; }
+    el.innerHTML = persons.map(p => '<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">' +
+      '<span><b>' + p.name + '</b> <span style="color:var(--fg2);font-size:11px">' + (p.description||'') + '</span>' +
+      (p.image_count ? ' <span class="badge" style="font-size:10px">' + p.image_count + ' photos</span>' : '') + '</span>' +
+      '<button class="danger" style="font-size:10px;padding:2px 8px" onclick="deleteMemPerson(\'' + p.id + '\')">Delete</button></div>').join('');
+  } catch(e) { console.error(e); }
+}
+
+async function addMemPerson() {
+  const name = document.getElementById('mem-person-name').value.trim();
+  if (!name) return;
+  const desc = document.getElementById('mem-person-desc').value.trim();
+  const body = { name, description: desc };
+  const fileInput = document.getElementById('mem-person-photo');
+  if (fileInput.files.length) {
+    const file = fileInput.files[0];
+    const b64 = await fileToBase64(file);
+    body.reference_images = [b64];
+  }
+  await fetch('/api/robot/memory/persons', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  document.getElementById('mem-person-name').value = '';
+  document.getElementById('mem-person-desc').value = '';
+  fileInput.value = '';
+  loadMemPersons();
+  loadMemoryStats();
+}
+
+async function deleteMemPerson(id) {
+  await fetch('/api/robot/memory/persons/' + id, { method:'DELETE' });
+  loadMemPersons();
+  loadMemoryStats();
+}
+
+async function loadMemObjects() {
+  try {
+    const r = await fetch('/api/robot/memory/objects');
+    const objects = await r.json();
+    const el = document.getElementById('mem-objects-list');
+    if (!objects.length) { el.innerHTML = '<div class="empty">No objects.</div>'; return; }
+    el.innerHTML = objects.map(o => '<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">' +
+      '<span><b>' + o.name + '</b> <span style="color:var(--fg2);font-size:11px">' + (o.description||'') + '</span>' +
+      (o.image_count ? ' <span class="badge" style="font-size:10px">' + o.image_count + ' photos</span>' : '') + '</span>' +
+      '<button class="danger" style="font-size:10px;padding:2px 8px" onclick="deleteMemObject(\'' + o.id + '\')">Delete</button></div>').join('');
+  } catch(e) { console.error(e); }
+}
+
+async function addMemObject() {
+  const name = document.getElementById('mem-object-name').value.trim();
+  if (!name) return;
+  const desc = document.getElementById('mem-object-desc').value.trim();
+  const body = { name, description: desc };
+  const fileInput = document.getElementById('mem-object-photo');
+  if (fileInput.files.length) {
+    const file = fileInput.files[0];
+    const b64 = await fileToBase64(file);
+    body.reference_images = [b64];
+  }
+  await fetch('/api/robot/memory/objects', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  document.getElementById('mem-object-name').value = '';
+  document.getElementById('mem-object-desc').value = '';
+  fileInput.value = '';
+  loadMemObjects();
+  loadMemoryStats();
+}
+
+async function deleteMemObject(id) {
+  await fetch('/api/robot/memory/objects/' + id, { method:'DELETE' });
+  loadMemObjects();
+  loadMemoryStats();
+}
+
+async function loadMemRooms() {
+  try {
+    const r = await fetch('/api/robot/memory/rooms');
+    const rooms = await r.json();
+    const el = document.getElementById('mem-rooms-list');
+    if (!rooms.length) { el.innerHTML = '<div class="empty">No rooms.</div>'; return; }
+    el.innerHTML = rooms.map(rm => '<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">' +
+      '<span><b>' + rm.name + '</b> <span style="color:var(--fg2);font-size:11px">' + (rm.description||'') + '</span></span>' +
+      '<button class="danger" style="font-size:10px;padding:2px 8px" onclick="deleteMemRoom(\'' + rm.id + '\')">Delete</button></div>').join('');
+  } catch(e) { console.error(e); }
+}
+
+async function addMemRoom() {
+  const name = document.getElementById('mem-room-name').value.trim();
+  if (!name) return;
+  const desc = document.getElementById('mem-room-desc').value.trim();
+  await fetch('/api/robot/memory/rooms', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, description: desc }) });
+  document.getElementById('mem-room-name').value = '';
+  document.getElementById('mem-room-desc').value = '';
+  loadMemRooms();
+  loadMemoryStats();
+}
+
+async function deleteMemRoom(id) {
+  await fetch('/api/robot/memory/rooms/' + id, { method:'DELETE' });
+  loadMemRooms();
+  loadMemoryStats();
+}
+
+async function loadMemRoutines() {
+  try {
+    const r = await fetch('/api/robot/memory/routines');
+    const routines = await r.json();
+    const el = document.getElementById('mem-routines-list');
+    if (!routines.length) { el.innerHTML = '<div class="empty">No routines.</div>'; return; }
+    el.innerHTML = routines.map(rt => '<div class="row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">' +
+      '<span><b>' + rt.name + '</b> <span style="color:var(--fg2);font-size:11px">' + rt.schedule + '</span> ' +
+      '<span style="color:var(--fg2);font-size:11px">' + (rt.description||'') + '</span></span>' +
+      '<button class="danger" style="font-size:10px;padding:2px 8px" onclick="deleteMemRoutine(\'' + rt.id + '\')">Delete</button></div>').join('');
+  } catch(e) { console.error(e); }
+}
+
+async function addMemRoutine() {
+  const name = document.getElementById('mem-routine-name').value.trim();
+  if (!name) return;
+  const schedule = document.getElementById('mem-routine-schedule').value.trim();
+  const desc = document.getElementById('mem-routine-desc').value.trim();
+  await fetch('/api/robot/memory/routines', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, schedule, description: desc }) });
+  document.getElementById('mem-routine-name').value = '';
+  document.getElementById('mem-routine-schedule').value = '';
+  document.getElementById('mem-routine-desc').value = '';
+  loadMemRoutines();
+  loadMemoryStats();
+}
+
+async function deleteMemRoutine(id) {
+  await fetch('/api/robot/memory/routines/' + id, { method:'DELETE' });
+  loadMemRoutines();
+  loadMemoryStats();
+}
+
+async function queryMemory() {
+  const text = document.getElementById('mem-query-text').value.trim();
+  if (!text) return;
+  const room = document.getElementById('mem-query-room').value;
+  const entityType = document.getElementById('mem-query-type').value;
+  const filters = {};
+  if (room) filters.room = room;
+  if (entityType) filters.entity_type = entityType;
+  const body = { type: 'text', text, filters, n_results: 20 };
+  try {
+    const r = await fetch('/api/robot/memory/query', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const d = await r.json();
+    const el = document.getElementById('mem-query-results');
+    if (!d.results || !d.results.length) { el.innerHTML = '<div class="empty">No results.</div>'; return; }
+    el.innerHTML = '<table class="config-table"><tr><th>Type</th><th>Name</th><th>Room</th><th>Description</th><th>Time</th><th>Score</th></tr>' +
+      d.results.map(r => '<tr><td>' + (r.entity_type||'scene') + '</td><td>' + (r.entity_name||'--') + '</td><td>' + (r.room||'--') + '</td>' +
+      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">' + (r.description||r.document||'--') + '</td>' +
+      '<td>' + (r.timestamp ? new Date(r.timestamp*1000).toLocaleString() : '--') + '</td>' +
+      '<td>' + (r.similarity !== undefined ? r.similarity.toFixed(3) : '--') + '</td></tr>').join('') + '</table>';
+  } catch(e) { console.error(e); document.getElementById('mem-query-results').innerHTML = '<div class="empty">Query failed.</div>'; }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.readAsDataURL(file);
+  });
+}
+
 // --- Init ---
 connectWS();
 loadStatus();
@@ -1518,6 +1803,8 @@ loadCallConfig();
 loadTtsConfig();
 loadLlmConfig();
 loadRobotConfig();
+loadMemoryStats();
+loadMemPersons();
 setInterval(loadStatus, 30000);
 </script>
 </body>
