@@ -257,6 +257,18 @@ class CommandHandler:
             self.sim.apply_stop()
             return {"ok": True, "detail": "stopped (sim)"}
 
+        elif command == "reset":
+            ok = self.sim.apply_reset()
+            if ok:
+                return {"ok": True, "detail": "environment reset (sim)"}
+            return {"ok": False, "error": "reset failed — CUDA corrupted, restarting..."}
+
+        elif command == "task":
+            # Natural language task — for now, just acknowledge
+            task_text = params.get("task", "")
+            logger.info("Task requested: %s", task_text)
+            return {"ok": True, "detail": f"task received: {task_text} (sim — not yet implemented)"}
+
         elif command == "camera_snapshot":
             source = params.get("source", "head_rgb")
             frame = self.sim.capture_camera(source)
@@ -285,7 +297,27 @@ class CommandHandler:
         elif command in ("speak", "listen", "audio_monitor_start", "audio_monitor_stop"):
             return {"ok": True, "detail": f"{command} (sim, no audio)"}
 
-        elif command in ("snapshot", "detect_object", "look", "camera_describe"):
+        elif command == "detect_object":
+            prompt = params.get("class", params.get("prompt", ""))
+            if not prompt:
+                return {"ok": False, "error": "detect_object requires 'class' or 'prompt' param"}
+            frame = self.sim.capture_camera("head_rgb")
+            if not frame:
+                return {"ok": False, "error": "no camera frame available"}
+            try:
+                import detection
+                classes = [c.strip() for c in prompt.split(",")]
+                confidence = params.get("confidence", 0.3)
+                detections = detection.detect(frame, classes, confidence=confidence)
+                return {
+                    "ok": True,
+                    "detections": detections,
+                    "count": len(detections),
+                }
+            except Exception as exc:
+                return {"ok": False, "error": f"detection failed: {exc}"}
+
+        elif command in ("snapshot", "look", "camera_describe"):
             return {"ok": True, "detail": f"{command} (sim placeholder)"}
 
         else:
@@ -320,7 +352,7 @@ class GatewayClient:
         try:
             import websockets
         except ImportError:
-            logger.error("Install websockets: pip install websockets")
+            print("[adapter] ERROR: Install websockets: pip install websockets", flush=True)
             return
 
         delay = 1.0
@@ -330,7 +362,7 @@ class GatewayClient:
                 if self.token:
                     headers["Authorization"] = f"Bearer {self.token}"
 
-                logger.info("Connecting to %s ...", self.url)
+                print(f"[adapter] Connecting to {self.url} ...", flush=True)
                 # websockets 12+ renamed additional_headers to extra_headers
                 ws_kwargs = dict(
                     ping_interval=20,
@@ -351,7 +383,7 @@ class GatewayClient:
                         **ws_kwargs,
                     )
                 self._connected = True
-                logger.info("Connected to gateway")
+                print("[adapter] Connected to gateway", flush=True)
                 delay = 1.0
 
                 if self._heartbeat_task is None or self._heartbeat_task.done():
@@ -362,10 +394,10 @@ class GatewayClient:
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                logger.warning("Connection error: %s", exc)
+                print(f"[adapter] WS connection error: {exc}", flush=True)
 
             self._connected = False
-            logger.info("Reconnecting in %.0fs...", delay)
+            print(f"[adapter] Reconnecting in {delay:.0f}s...", flush=True)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
 
@@ -384,7 +416,7 @@ class GatewayClient:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.warning("Recv error: %s", exc)
+            print(f"[adapter] WS recv error: {exc}", flush=True)
 
     async def _handle(self, msg: dict):
         msg_type = msg.get("type", "")
@@ -401,6 +433,22 @@ class GatewayClient:
 
         # Gateway sends some commands directly (not wrapped in robot_command)
         # e.g. camera_snapshot, camera_stream_start, audio_monitor_start
+        if msg_type == "detect_request" and self._on_command:
+            # Gateway asks us to detect objects in the current frame
+            wrapped = {
+                "command": "detect_object",
+                "params": {
+                    "class": msg.get("prompt", ""),
+                    "confidence": msg.get("confidence", 0.3),
+                },
+                "_req_id": msg.get("_req_id"),
+            }
+            result = await self._on_command(wrapped)
+            if result:
+                result["type"] = "detection_result"
+                await self.send(result)
+            return
+
         if msg_type in (
             "camera_snapshot", "camera_stream_start", "camera_stream_stop",
             "camera_describe", "audio_monitor_start", "audio_monitor_stop",
@@ -412,9 +460,10 @@ class GatewayClient:
                 await self.send(result)
             return
 
-        if msg_type == "tts_speak":
+        if msg_type in ("tts_speak", "robot_speak"):
             text = msg.get("text", "")
-            logger.info("TTS: %s", text[:100])
+            has_audio = bool(msg.get("audio_base64"))
+            logger.info("TTS: %s (audio=%s)", text[:100], has_audio)
             return
 
     async def _heartbeat_loop(self):
@@ -439,24 +488,21 @@ class GatewayClient:
 async def camera_stream_loop(sim: SimBackend, gw: GatewayClient, fps: float):
     """Stream camera frames to gateway.
 
-    The gateway registers cameras as ``head_rgb`` etc., so the *source* field
-    in outgoing messages must use the gateway's camera IDs.  Internally,
-    ``sim.capture_camera()`` maps to the sim's native sensor names.
+    Camera is now captured in the main sim thread to avoid PhysX threading
+    issues.  This loop reads the cached frame and sends it to the gateway.
     """
     interval = 1.0 / max(fps, 0.1)
     seq = 0
-    loop = asyncio.get_running_loop()
+    last_frame = None
     gateway_source = "head_rgb"
     while True:
         await asyncio.sleep(interval)
         if not gw.connected:
             continue
-        try:
-            frame = await loop.run_in_executor(None, sim.capture_camera, gateway_source)
-        except Exception as exc:
-            print(f"[adapter] camera capture error: {exc}", flush=True)
-            continue
-        if frame:
+        # Read cached frame (captured in main thread by step())
+        frame = sim.capture_camera(gateway_source)
+        if frame and frame is not last_frame:
+            last_frame = frame
             seq += 1
             await gw.send({
                 "type": "camera_frame",
@@ -471,20 +517,83 @@ async def camera_stream_loop(sim: SimBackend, gw: GatewayClient, fps: float):
                 print(f"[adapter] Camera frames sent: {seq}", flush=True)
 
 
+async def observation_loop(sim: SimBackend, gw: GatewayClient, interval: float = 5.0):
+    """Embed camera frames via CLIP and send observations to gateway for spatial memory.
+
+    Runs at a low rate (default every 5s) to avoid overwhelming the GPU.
+    Only sends when connected and CLIP is initialized.
+    """
+    try:
+        import clip_embedder
+    except ImportError:
+        print("[adapter] CLIP embedder not available, observation loop disabled", flush=True)
+        return
+
+    # Try to initialize CLIP
+    if not clip_embedder.init(device="cuda"):
+        print("[adapter] CLIP init failed, observation loop disabled", flush=True)
+        return
+
+    obs_count = 0
+    while True:
+        await asyncio.sleep(interval)
+        if not gw.connected:
+            continue
+
+        frame = sim.capture_camera("head_rgb")
+        if not frame:
+            continue
+
+        # Run CLIP embedding in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        embedding = await loop.run_in_executor(None, clip_embedder.embed_image, frame)
+        if not embedding:
+            continue
+
+        # Get robot pose for spatial metadata
+        pose = sim.get_world_pose()
+
+        obs_count += 1
+        await gw.send({
+            "type": "observation",
+            "embedding": embedding,
+            "metadata": {
+                "source": "head_rgb",
+                "robot_x": pose.get("x", 0.0),
+                "robot_y": pose.get("y", 0.0),
+                "robot_theta": pose.get("theta", 0.0),
+                "world_x": pose.get("x", 0.0),
+                "world_y": pose.get("y", 0.0),
+                "world_z": pose.get("z", 0.0),
+                "timestamp": time.time(),
+                "entity_type": "scene",
+                "depth_available": False,
+            },
+        })
+
+        if obs_count == 1:
+            print(f"[adapter] First CLIP observation sent ({len(embedding)}-dim)", flush=True)
+        elif obs_count % 100 == 0:
+            print(f"[adapter] CLIP observations sent: {obs_count}", flush=True)
+
+
 async def state_report_loop(sim: SimBackend, gw: GatewayClient, hz: float = 2.0):
-    """Report joint state / pose periodically."""
+    """Report joint state / pose periodically.
+
+    All getters now return cached data (updated in main thread each step),
+    so no PhysX threading issues — no run_in_executor needed.
+    """
     interval = 1.0 / hz
-    loop = asyncio.get_running_loop()
     count = 0
     while True:
         await asyncio.sleep(interval)
         if not gw.connected:
             continue
         try:
-            pose = await loop.run_in_executor(None, sim.get_world_pose)
-            joints = await loop.run_in_executor(None, sim.get_joint_positions)
-            vels = await loop.run_in_executor(None, sim.get_joint_velocities)
-            imu = await loop.run_in_executor(None, sim.get_imu)
+            pose = sim.get_world_pose()
+            joints = sim.get_joint_positions()
+            vels = sim.get_joint_velocities()
+            imu = sim.get_imu()
         except Exception as exc:
             print(f"[adapter] state report error: {exc}", flush=True)
             continue
@@ -517,6 +626,11 @@ def sim_step_main_loop(sim: SimBackend, hz: float = 50.0):
     step_count = 0
     print(f"[adapter] Sim step loop starting (main thread, {hz} Hz)", flush=True)
     while True:
+        # If CUDA context is corrupted, exit so restart loop can relaunch
+        if hasattr(sim, "_fatal") and sim._fatal:
+            print("[adapter] FATAL: CUDA context corrupted, exiting for restart", flush=True)
+            import os
+            os._exit(1)
         t0 = time.time()
         try:
             sim.step()
@@ -556,6 +670,8 @@ def parse_args():
     p.add_argument("--sim-hz", type=float, default=50.0, help="Sim step rate")
     p.add_argument("--device", default="cuda:0", help="Sim device (isaac only)")
     p.add_argument("--seed", type=int, default=42, help="Random seed")
+    p.add_argument("--obs-interval", type=float, default=5.0, dest="obs_interval",
+                    help="CLIP observation interval in seconds (spatial memory)")
     return p.parse_args()
 
 
@@ -571,10 +687,14 @@ async def run_async(args, sim: SimBackend):
 
     print(f"[adapter] Async tasks starting (backend={args.backend})", flush=True)
 
+    # Observation interval: embed frames via CLIP for spatial memory
+    obs_interval = getattr(args, "obs_interval", 5.0)
+
     tasks = [
         asyncio.create_task(gw.connect_forever()),
         asyncio.create_task(camera_stream_loop(sim, gw, fps=args.camera_fps)),
         asyncio.create_task(state_report_loop(sim, gw, hz=args.state_hz)),
+        asyncio.create_task(observation_loop(sim, gw, interval=obs_interval)),
     ]
 
     try:
@@ -683,6 +803,15 @@ def main():
     print("[adapter] Backend initialized", flush=True)
 
     if args.backend == "isaac":
+        # Tell the backend how often to capture camera frames in the main thread.
+        # sim_hz / camera_fps = steps per camera capture.
+        print(f"[adapter] hasattr _camera_capture_interval: {hasattr(sim, '_camera_capture_interval')}", flush=True)
+        print(f"[adapter] hasattr _warmup_remaining: {hasattr(sim, '_warmup_remaining')}", flush=True)
+        if hasattr(sim, "_camera_capture_interval"):
+            sim._camera_capture_interval = max(1, int(args.sim_hz / max(args.camera_fps, 0.1)))
+            print(f"[adapter] Camera capture every {sim._camera_capture_interval} sim steps "
+                  f"(~{args.camera_fps:.1f} fps)", flush=True)
+
         # Isaac backend: main thread runs sim stepping (Kit requires it),
         # asyncio runs in a background thread for WS/camera/state.
         import threading
