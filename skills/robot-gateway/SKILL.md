@@ -24,15 +24,17 @@ Robot endpoint for the Clawfinger gateway. Connects to humanoid robots (starting
 ## Architecture
 
 ```
-Mac Mini (gateway)                          Robot (Jetson Orin)
-  app.py                                      Intercom peer
-  endpoints/robot/                            unitree_sdk2_python
-  Intercom bridge sidecar  <-- P2P -->        Motor control / sensors
+Mac Mini (gateway)                          Robot (Jetson Orin) OR Isaac Sim adapter (RTX)
+  app.py                                      Intercom peer / WebSocket client
+  endpoints/robot/                            unitree_sdk2_python / isaac_backend.py
+  Intercom bridge sidecar  <-- P2P -->        Motor control / sensors / sim physics
+  Qwen3.5-4B VLM (mlx-vlm)                   YOLO-World + CLIP (on-device)
 ```
 
-- **Gateway** = System 2 brain (LLM reasoning, task decomposition)
-- **Robot** = System 1 body (RL policies, motor control, sensors)
-- **Transport**: Intercom P2P — see https://github.com/Trac-Systems/intercom/
+- **Gateway** = System 2 brain (LLM reasoning, task decomposition, visual confirmation)
+- **Robot/Sim** = System 1 body (RL policies, motor control, sensors, local detection)
+- **Transport**: Intercom P2P (hardware) or WebSocket (sim adapter)
+- **Two transports**: `robot.transport = "intercom"` for real robot, `"websocket"` for sim adapter
 
 ### Intercom Topology (gateway-centric hub)
 
@@ -264,6 +266,297 @@ Intercom P2P (HyperDHT) handles connectivity regardless of network topology. Onc
 - Python SDK: `unitree_sdk2_python` (CycloneDDS 0.10.2)
 - Mic not in SDK — use ALSA directly
 - Camera via pyrealsense2, not DDS
+
+## Isaac Sim Integration (Development & Testing)
+
+The sim adapter bridges Isaac Sim (Omniverse) to the gateway, enabling full robot development and testing without physical hardware. The sim adapter runs on an RTX GPU machine and connects to the gateway via WebSocket.
+
+### Architecture
+
+```
+Mac Mini (gateway :8996)                 RTX Machine (sim adapter)
+  app.py                                   adapter.py
+  robot controller                         isaac_backend.py (physics, locomotion)
+  VLM confirmation                         detection.py (YOLO-World)
+  spatial memory                           clip_embedder.py (CLIP observations)
+         <-- WebSocket (reverse tunnel) -->
+```
+
+### Setup on RTX Machine
+
+**Prerequisites**: NVIDIA RTX GPU, Ubuntu, CUDA 12+, conda
+
+```bash
+# 1. Create conda environment
+conda create -n g1sim python=3.11
+conda activate g1sim
+
+# 2. Install Isaac Sim + Isaac Lab
+pip install isaacsim==5.1.0 isaaclab==0.54.3
+
+# 3. Accept EULA (required for headless operation)
+export OMNI_KIT_ACCEPT_EULA=Y
+echo "yes" > $(python -c "import isaacsim; print(isaacsim.__path__[0])")/kit/EULA_ACCEPTED
+
+# 4. Install adapter dependencies
+pip install websockets torch onnxruntime-gpu ultralytics open-clip-torch
+
+# 5. Install Unitree SDK (for joint configs)
+cd /path/to/unitree_sdk2_python && pip install -e .
+
+# 6. Clone/copy sim-adapter files from gateway
+# Files: adapter.py, isaac_backend.py, detection.py, clip_embedder.py
+# Assets: assets/g1_locomotion.onnx (locomotion policy)
+```
+
+### Environment Variables
+
+```bash
+export PYTHONUNBUFFERED=1
+export OMNI_KIT_ACCEPT_EULA=Y
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+export UNITREE_SIM_PATH=/path/to/unitree_sim_isaaclab
+export PROJECT_ROOT=$UNITREE_SIM_PATH
+```
+
+### Connecting to Gateway
+
+The sim adapter connects to the gateway via WebSocket. For remote machines (e.g., ngrok tunneled), use a reverse SSH tunnel:
+
+```bash
+# On RTX machine: create reverse tunnel so adapter can reach gateway
+ssh -N -R 18996:127.0.0.1:8996 user@gateway-host &
+
+# Launch adapter (headless, with cameras)
+xvfb-run -a python adapter.py \
+  --headless --enable_cameras \
+  --gateway ws://127.0.0.1:18996/ws/robot \
+  --bearer localdev \
+  --obs-interval 5.0
+```
+
+### Gateway Configuration for Sim
+
+Set `robot.transport` to `"websocket"` in `config.json`:
+
+```json
+{
+  "robot": {
+    "enabled": true,
+    "transport": "websocket"
+  }
+}
+```
+
+The gateway automatically accepts WebSocket connections on `/ws/robot` when transport is `"websocket"`.
+
+### Sim Adapter Components
+
+| File | Purpose |
+|------|---------|
+| `sim-adapter/adapter.py` | Main adapter: WS client, command handler, camera/audio streaming |
+| `sim-adapter/isaac_backend.py` | Isaac Sim physics: locomotion controller, env stepping, camera capture |
+| `sim-adapter/detection.py` | YOLO-World open-vocabulary object detection on sim camera frames |
+| `sim-adapter/clip_embedder.py` | CLIP ViT-B-32 embedding for spatial memory observations |
+| `sim-adapter/assets/g1_locomotion.onnx` | Trained velocity locomotion policy (337KB, bidirectional) |
+
+### Locomotion Policy
+
+The ONNX policy runs at 50Hz in the sim adapter's main thread:
+
+- **Input**: [1, 123] — angular velocity, gravity, command [vx, vy, vyaw], joint positions/velocities, phase clock
+- **Output**: [1, 37] — joint position targets for all 37 DOF
+- **Training range**: `vx ∈ [-0.5, 1.0]`, `vy ∈ [-0.5, 0.5]`, `vyaw ∈ [-1.0, 1.0]`
+- **Forward + backward walking**, turning, lateral movement
+
+### Training New Policies
+
+```bash
+# Train velocity locomotion in Isaac Lab
+cd /path/to/IsaacLab
+xvfb-run -a python scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Velocity-Flat-G1-v0 \
+  --num_envs 8192 \
+  --headless \
+  --max_iterations 2000
+
+# Export to ONNX (after training completes)
+python export_onnx.py \
+  /path/to/logs/rsl_rl/g1_flat/<timestamp>/model_1999.pt \
+  sim-adapter/assets/g1_locomotion.onnx
+```
+
+### Threading Model (Critical)
+
+Isaac Sim requires specific threading:
+- **Main thread**: `env.step()` / physics stepping (Kit kernel requirement)
+- **Background thread**: asyncio event loop (WebSocket, camera streaming, command handling)
+- **Never**: `run_in_executor()` for sim stepping — deadlocks
+
+### Troubleshooting (Sim)
+
+| Symptom | Fix |
+|---------|-----|
+| `vkCreateInstance` error | Need `xvfb-run` — no display attached |
+| Adapter connects but no robot movement | Check `g1_locomotion.onnx` exists in `assets/` |
+| Camera frames blank | Ensure `--enable_cameras` flag passed |
+| WebSocket disconnects | Check reverse tunnel is active; verify bearer token |
+| `RuntimeError: Cannot run the event loop` | Physics must run in main thread, not asyncio |
+
+---
+
+## LLM (Qwen3.5-4B Multimodal VLM)
+
+The gateway uses a single multimodal VLM for both phone and robot: **Qwen3.5-4B** at 4-bit quantization via `mlx-vlm`.
+
+### Model Details
+
+| Property | Value |
+|----------|-------|
+| Model | [`TracNetwork/Qwen3.5-4B-4bit-mlx`](https://huggingface.co/TracNetwork/Qwen3.5-4B-4bit-mlx) |
+| Source | `Qwen/Qwen3.5-4B` (4-bit quantized via `mlx_vlm.convert`) |
+| Size | ~2.9 GB on disk |
+| Architecture | Gated Delta Networks + sparse MoE |
+| Modalities | Text + images + video |
+| Context window | 262K tokens |
+| Inference | `mlx-vlm` on Apple Silicon (MPS) |
+
+### Configuration
+
+Global LLM config applies to both phone and robot:
+
+```json
+{
+  "llm": {
+    "model": ".models/Qwen3.5-4B-4bit",
+    "multimodal": true,
+    "max_tokens": 80,
+    "temperature": 0.25
+  }
+}
+```
+
+Robot can override specific LLM settings via `robot.llm`:
+
+```json
+{
+  "robot": {
+    "llm": {
+      "max_tokens": 200,
+      "temperature": 0.3,
+      "system_prompt": "You are Robert, a helpful robot assistant..."
+    }
+  }
+}
+```
+
+The `config.robot_llm()` function merges `robot.llm` over global `llm` — robot overrides take precedence, unset keys fall back to global.
+
+### Multimodal Usage
+
+When `llm.multimodal: true`, the VLM backend handles both text-only and image+text inputs:
+
+- **Text-only** (phone calls): Same as before, VLM handles plain text
+- **Image+text** (robot vision): Messages include `image_url` content blocks with base64 JPEG data
+- **Visual confirmation**: Cropped detection images sent to VLM for YES/NO/UNSURE classification
+
+### Key Technical Notes
+
+- **Thinking mode**: Must use `processor.tokenizer.apply_chat_template(enable_thinking=False)` — `mlx_vlm`'s own `apply_chat_template` doesn't properly pass this kwarg
+- **GenerationResult**: Both `mlx_lm` and `mlx_vlm` `generate()` may return `GenerationResult` objects, not strings. Use `getattr(result, "text", None)`
+- **Download**: `huggingface_hub.snapshot_download('TracNetwork/Qwen3.5-4B-4bit-mlx', local_dir='.models/Qwen3.5-4B-4bit')`
+- **Convert from source**: `python -m mlx_vlm.convert --hf-path Qwen/Qwen3.5-4B -q --q-bits 4 --mlx-path .models/Qwen3.5-4B-4bit`
+
+---
+
+## Visual Confirmation Pipeline (YOLO-World + VLM)
+
+When the robot needs to find or identify objects, a two-stage pipeline runs:
+
+### Flow
+
+```
+1. Gateway sends detect_request → Robot/Sim
+2. Robot/Sim runs YOLO-World (open-vocabulary detection) on camera frame
+3. Returns detections: [{bbox, confidence, class, cropped_b64}, ...]
+4. Gateway sends each crop to VLM: "Is this a '{target}'? YES/NO/UNSURE"
+5. VLM responds:
+   - YES → object confirmed, proceed with action
+   - NO  → skip this detection, try next
+   - UNSURE → ask user via voice: "I found something, is this what you want?"
+6. User confirms/denies via voice → robot acts accordingly
+```
+
+### Intercom Protocol
+
+| Direction | Type | Fields |
+|-----------|------|--------|
+| Gateway → Robot/Sim | `detect_request` | `classes: ["keys", "phone"]`, `confidence: 0.3`, `max_detections: 5` |
+| Robot/Sim → Gateway | `detection_result` | `detections: [{class, confidence, bbox, cropped_b64}]` |
+
+### Controller Actions
+
+- `detect_object`: Runs full pipeline — YOLO detect → VLM confirm → report results
+- `confirm_visual`: Direct VLM image Q&A — send image + question, get answer
+
+---
+
+## CLIP Observation Pipeline
+
+The robot/sim continuously embeds camera frames with CLIP and sends 512-dim embeddings to the gateway for spatial memory storage.
+
+### Flow
+
+```
+Robot/Sim: camera frame → CLIP ViT-B-32 → 512-dim embedding
+  → Intercom: {type: "observation", embedding: [512 floats], metadata: {...}}
+Gateway: stores embedding + metadata directly in ChromaDB (no CLIP on gateway at runtime)
+```
+
+### Embedding Split
+
+| Location | CLIP Runtime | Purpose | Rate |
+|----------|-------------|---------|------|
+| Jetson (real robot) | TensorRT, CUDA 11.4 | Runtime observations | 5 fps |
+| RTX machine (sim) | PyTorch, CUDA 12 | Runtime observations | configurable via `--obs-interval` |
+| Mac Mini (gateway) | open_clip, MPS | Teaching (reference photos) + text queries | On-demand only |
+
+### Observation Metadata Schema
+
+Each observation stores 7 query dimensions:
+
+```python
+{
+    "entity_type": "person",         # person | object | scene
+    "entity_id": "abc123",           # matched entity ID
+    "entity_name": "Markus",         # matched entity name
+    "room": "kitchen",               # room zone
+    "description": "Person near counter",
+    "labels": "person,counter",      # detection labels
+    "world_x": 2.3, "world_y": 1.4, "world_z": 0.9,  # object position (meters)
+    "robot_x": 1.2, "robot_y": 3.4, "robot_theta": 0.5,  # robot pose when observed
+    "timestamp": 1709500000.0,
+    "source": "head_rgb",
+    "depth_available": false,
+}
+```
+
+### Robot Voice (German TTS)
+
+The gateway synthesizes robot speech audio and sends WAV bytes to the robot:
+
+- `robot.voice_lang = "en"` → Kokoro TTS (English)
+- `robot.voice_lang = "de"` → Piper TTS (German, thorsten-high voice)
+
+The robot just plays audio — no TTS engine needed on-device.
+
+```
+User speaks → Robot mic → Gateway ASR → LLM → Gateway TTS → WAV bytes → Robot speaker
+```
+
+The `voice_pipeline.synthesize_robot()` function routes by `robot.voice_lang` and sends base64 WAV via the `robot_speak` message type.
+
+---
 
 ## Troubleshooting
 

@@ -94,12 +94,21 @@ from huggingface_hub import snapshot_download
 for repo in [
     'mlx-community/parakeet-tdt-0.6b-v3',
     'mlx-community/Kokoro-82M-bf16',
-    'mlx-community/Qwen3-4B-Instruct-2507-4bit',
 ]:
     print(f'Downloading {repo}...')
     snapshot_download(repo)
     print(f'  Done: {repo}')
 "
+
+# Download Qwen3.5-4B VLM (4-bit MLX quantized, multimodal)
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('TracNetwork/Qwen3.5-4B-4bit-mlx', local_dir='.models/Qwen3.5-4B-4bit')
+print('Done: Qwen3.5-4B-4bit')
+"
+# Alternative: convert from source yourself
+# pip install mlx-vlm
+# python -m mlx_vlm.convert --hf-path Qwen/Qwen3.5-4B -q --q-bits 4 --mlx-path .models/Qwen3.5-4B-4bit
 
 # Download Piper German TTS model (ONNX — not a HuggingFace model)
 mkdir -p voices
@@ -115,7 +124,7 @@ curl -L -o voices/de_DE-thorsten-high.onnx.json \
 | `mlx-community/parakeet-tdt-0.6b-v3` | ASR (speech-to-text) | ~2.3 GB | Do NOT use `whisper-small-mlx` — broken processor with mlx_audio 0.3.x |
 | `mlx-community/Kokoro-82M-bf16` | TTS (text-to-speech) | 375 MB | Voice: `am_adam`, speed: 1.2 |
 | `de_DE-thorsten-high` (Piper) | TTS (German) | 109 MB | ONNX, Piper HTTP sidecar on :5123 |
-| `mlx-community/Qwen3-4B-Instruct-2507-4bit` | LLM (conversation) | ~2.5 GB | Loaded in-process via mlx-lm. Requires `enable_thinking=False` (handled automatically). |
+| [`TracNetwork/Qwen3.5-4B-4bit-mlx`](https://huggingface.co/TracNetwork/Qwen3.5-4B-4bit-mlx) | LLM (conversation, multimodal VLM) | ~2.9 GB | Loaded in-process via mlx-vlm. Supports text + images + video. Requires `enable_thinking=False` (handled automatically). |
 
 ### Step 4: Configure
 
@@ -179,7 +188,7 @@ All call policy and security settings are configurable at runtime via the contro
 
 ## Linux Setup
 
-The gateway Python code runs on Linux without modification. The only macOS-specific components are the default inference backends (`mlx_audio` for ASR/TTS, `mlx-lm` for LLM). On Linux, replace them with compatible servers:
+The gateway Python code runs on Linux without modification. The only macOS-specific components are the default inference backends (`mlx_audio` for ASR/TTS, `mlx-vlm` for LLM). On Linux, replace them with compatible servers:
 
 ### ASR/TTS sidecar replacement
 
@@ -225,7 +234,7 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 2. Skip mlx-audio and mlx-lm (Apple Silicon only)
+# 2. Skip mlx-audio and mlx-vlm (Apple Silicon only)
 #    Instead, start your ASR/TTS server and LLM server separately
 
 # 3. Configure
@@ -469,7 +478,7 @@ adb reverse --list
     "llm_ms": 355.8,
     "tts_ms": 630.4,
     "total_ms": 1436.4,
-    "llm_model": "local/mlx-community/Qwen3-4B-Instruct-2507-4bit"
+    "llm_model": "local/.models/Qwen3.5-4B-4bit"
   }
 }
 ```
@@ -581,7 +590,7 @@ Does not affect the current config — use `POST /api/config/tts` to apply.
 
 ```json
 {
-  "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+  "model": ".models/Qwen3.5-4B-4bit",
   "base_url": "",
   "has_api_key": false,
   "max_tokens": 80,
@@ -993,7 +1002,7 @@ Config changes made via the control center or API are saved to `config.json` aut
 **macOS (primary):**
 - macOS 15.6, Apple M4 Max
 - Python 3.13.5
-- mlx-audio 0.3.1, mlx-lm 0.30.5, mlx 0.30.6
+- mlx-audio 0.3.1, mlx-vlm 0.30.5, mlx 0.30.6
 - misaki 0.7.0, spacy 3.8.11, phonemizer 3.3.0
 - fastapi 0.130.0, uvicorn 0.41.0, httpx 0.28.1
 

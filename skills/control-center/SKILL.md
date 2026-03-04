@@ -16,12 +16,43 @@ The Clawfinger gateway serves a browser-based control center at `http://127.0.0.
 - **Status**: Gateway health, active sessions, LLM/ASR status, uptime
 - **Call**: Active call sessions, conversation history, inject TTS, takeover controls
 - **Config**: TTS voice/language, LLM model/parameters, call policy (greeting, auto-answer, blocklist)
-- **Robot**: Robot connection state, command dispatch, project status, perception panel
-- **Memory** *(Spatial Memory Panel — see below)*
+- **Robot**: Robot connection state, command dispatch, project status, perception panel, robot settings, robot LLM config
 
-## Spatial Memory Panel
+## Robot Tab Panels
 
-The **Memory** tab in the Robot section provides a UI for the spatial memory subsystem.
+### Robot Settings Panel
+
+Configures robot behavior, voice, wake word, and safety limits:
+
+- **Transport**: WebSocket (sim adapter) or Intercom P2P (hardware)
+- **Voice**: Voice selector, language (EN/DE), speed slider
+- **Wake Word**: Name input, timeout setting
+- **Safety**: Max speed, grasp force, reach limits, safety stop on disconnect
+- **G1-Specific**: Jetson IP, DDS domain, hand control toggle
+
+### Robot LLM Panel
+
+Overrides global LLM settings for the robot endpoint:
+
+- **Model override**: Use a different model for robot reasoning
+- **Multimodal toggle**: Enable/disable image+video input
+- **Max tokens**: Override response length for robot
+- **Temperature**: Override sampling temperature
+- **System prompt**: Robot-specific system prompt
+
+Empty fields fall back to global LLM settings. See `config.robot_llm()` in config.py.
+
+### Perception Panel
+
+Camera and audio controls (requires robot/sim connection):
+
+- Camera source selector, snapshot, describe (VLM), video stream
+- Audio monitor with amplitude visualization
+- Sensor readouts: IMU (roll/pitch/yaw), grippers
+
+### Spatial Memory Panel
+
+The **Memory** sub-section provides a UI for the spatial memory subsystem.
 
 ### Panels
 
