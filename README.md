@@ -1,99 +1,130 @@
 # Clawfinger Gateway
 
-A local voice gateway that runs the full **ASR → LLM → TTS** pipeline on Apple Silicon using MLX models. Designed for the Clawfinger Android app — the phone connects via ADB reverse port forwarding, keeping everything on localhost with zero cloud dependencies.
+A local voice gateway that runs the full **ASR → LLM → TTS** pipeline on Apple Silicon using MLX models. Handles two endpoint types — **phone calls** and **robot control** — with zero cloud dependencies.
 
-## How It Works
+## Architecture
 
-1. Phone sends audio over HTTP to the gateway
-2. **ASR** (Parakeet via mlx_audio) transcribes the caller's speech
-3. **LLM** (Qwen3.5-4B multimodal VLM via mlx-vlm, or any OpenAI-compatible endpoint) generates a reply
-4. **TTS** (Kokoro via mlx_audio for English, Piper Thorsten for German) synthesizes the reply to speech
-5. Audio is returned to the phone as base64 WAV
+```
+Phone (Android) ──ADB──► Gateway (:8996) ◄──WS/Intercom──► Robot (Jetson/Sim)
+                             │
+                    ┌────────┼────────┐
+                    ▼        ▼        ▼
+              mlx_audio   mlx-vlm   Piper
+              ASR+TTS     LLM/VLM   DE TTS
+              (:8765)               (:5123)
+```
 
-The gateway also provides:
+- **Phone endpoint**: Caller audio → ASR → LLM → TTS → audio back. The phone connects via `adb reverse tcp:8996`.
+- **Robot endpoint**: Voice commands → LLM decomposes into actions → dispatched to robot via Intercom P2P or WebSocket. Camera/mic perception, spatial memory, multi-step project orchestration.
+- **Agent interface**: External agents (OpenClaw, custom) observe sessions, take over LLM, inject context, control both phone and robot.
+- **Control center**: Browser UI at `:8996` for live management of everything.
 
-- **Control Center UI** — web dashboard for live call monitoring, instruction editing, LLM parameter tuning, TTS voice selection, and session logs
-- **Agent Interface** — WebSocket protocol for external agents to observe calls, take over LLM generation, inject TTS messages, inject context knowledge, and query call state
-- **TTS Voice Selection** — Kokoro voices for English (50+), Piper Thorsten voices for German (10 incl. emotional variants), with live preview and language switching
-- **Instruction System** — three-layer prompt management (global / per-session / per-turn)
-- **Conversation Compaction** — LLM-based summarization of older conversation history to stay within context budget
-- **Outbound Dialing** — trigger calls on the phone via ADB broadcast
+## Model Stack
+
+| Component | Model | Size | Purpose |
+|-----------|-------|------|---------|
+| ASR | Parakeet TDT 0.6B | ~600MB | Speech-to-text (via mlx_audio) |
+| LLM/VLM | Qwen3.5-4B 4-bit | 2.9GB | Text reasoning + multimodal vision (via mlx-vlm) |
+| TTS (EN) | Kokoro 82M | 375MB | English speech synthesis (via mlx_audio) |
+| TTS (DE) | Piper Thorsten | 109MB | German speech synthesis (ONNX sidecar) |
 
 ## Requirements
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.12+
-- ADB for phone connection
 - ~4 GB disk for models
+- ADB for phone connection (optional)
 
 ## Quick Start
 
 ```bash
-# Install
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pip install 'misaki==0.7.0' num2words spacy phonemizer mecab-python3 unidic-lite webrtcvad 'setuptools<81'
-pip install piper-tts flask pathvalidate
-
-# Configure
 cp config.example.json config.json
-
-# Start
 bin/start.sh
 ```
 
-The control center is at `http://127.0.0.1:8996`. See [SKILL.md](SKILL.md) for full installation, configuration, API documentation, and troubleshooting.
+Control center: `http://127.0.0.1:8996`
 
 ## API Overview
 
-### Phone API (bearer auth required)
+### Phone
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /health` | Health check — mlx_audio + LLM status |
-| `POST /api/asr` | ASR only — audio file in, transcript out |
-| `POST /api/turn` | Full voice turn — ASR → LLM → TTS (audio in, audio out) |
-| `POST /api/session/new` | Create a new session |
-| `POST /api/session/reset` | Reset session history |
-
-### Control Center (no auth)
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /` | Control center web UI |
-| `GET /api/status` | System status (uptime, calls, model health, config) |
-| `GET /api/sessions` | List persisted sessions |
-| `GET /api/sessions/{id}` | Session detail with turn-by-turn transcript |
-| `POST /api/config` | Hot-reload config from disk |
-| `GET/POST /api/config/tts` | View/update TTS voice, speed, language (en/de), Piper settings |
-| `POST /api/tts/preview` | Preview TTS voice with sample audio |
-| `GET/POST /api/config/llm` | View/update LLM generation parameters at runtime |
-| `GET/POST /api/config/call` | View/update call policy + security |
-| `POST /api/call/inject` | Inject TTS message into event stream |
+| `POST /api/turn` | Full voice turn — ASR → LLM → TTS |
+| `POST /api/asr` | ASR only — transcript out |
 | `POST /api/call/dial` | Dial outbound call via ADB |
-| `WS /ws/events` | Real-time event stream for UI |
+| `POST /api/call/hangup` | Hang up active call via ADB |
+| `POST /api/call/inject` | Inject TTS into active call |
+| `GET/POST /api/config/call` | Call policy (auto-answer, greetings, filtering) |
+| `GET /api/caller-history` | Caller history |
 
-### Instructions
+### Robot
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /api/instructions` | Get current instructions (base + per-session) |
-| `POST /api/instructions` | Set base (global) instruction |
-| `POST /api/instructions/{sid}` | Set per-session instruction |
-| `POST /api/instructions/{sid}/turn` | Set one-shot per-turn supplement |
-| `DELETE /api/instructions/{sid}` | Clear per-session instruction |
+| `GET/POST /api/config/robot` | Robot config (model, transport, wake word, safety) |
+| `POST /api/robot/project/start` | Start a voice-driven project |
+| `GET /api/robot/project` | Current project status with step progress |
+| `POST /api/robot/project/cancel` | Cancel active project |
+| `GET /api/robot/skills` | List available skill packages |
+| `GET /api/robot/skills/{name}/{topic}` | Read skill knowledge (.md content) |
+| `POST /api/robot/camera/snapshot` | Capture camera frame |
+| `POST /api/robot/camera/describe` | VLM scene description |
+| `GET /api/robot/camera/stream` | MJPEG video stream |
+| `GET /api/robot/perception` | List cameras and mics |
+| `WS /ws/robot` | Robot transport WebSocket (sim adapter / hardware) |
+
+### Spatial Memory
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET/POST /api/robot/memory/persons` | List / teach persons |
+| `GET/POST /api/robot/memory/objects` | List / teach objects |
+| `GET/POST /api/robot/memory/rooms` | List / define rooms |
+| `POST /api/robot/memory/observations` | Record observation |
+| `POST /api/robot/memory/query` | Natural language query with time filters |
+| `POST /api/robot/memory/last_seen` | Most recent observation of entity |
+| `GET /api/robot/memory/stats` | DB statistics with temporal range |
 
 ### Agent Interface
 
 | Endpoint | Purpose |
 |----------|---------|
-| `WS /api/agent/ws` | Agent WebSocket (takeover, inject, observe, query state) |
-| `POST /api/agent/inject` | REST inject — TTS message into call |
-| `GET /api/agent/sessions` | List active session IDs |
-| `GET /api/agent/call/{sid}` | Query call state (history, instructions, metadata) |
-| `GET /api/agent/context/{sid}` | Read injected agent knowledge |
-| `POST /api/agent/context/{sid}` | Inject/replace agent knowledge |
-| `DELETE /api/agent/context/{sid}` | Clear agent knowledge |
+| `WS /api/agent/ws` | Agent WebSocket — phone + robot control |
+| `POST /api/agent/inject` | Inject TTS message |
+| `GET /api/agent/sessions` | List active sessions |
+| `GET /api/agent/call/{sid}` | Full call state |
+| `GET/POST/DELETE /api/agent/context/{sid}` | Agent knowledge injection |
+| `POST /api/agent/takeover` | Take over session LLM |
+| `POST /api/agent/release` | Release LLM control |
+
+### System
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Health check |
+| `GET /api/status` | System status (uptime, models, sessions) |
+| `GET/POST /api/config/tts` | TTS voice, speed, language |
+| `GET/POST /api/config/llm` | LLM model and generation params |
+| `GET/POST /api/instructions` | Global LLM instructions |
+| `POST /api/instructions/{sid}` | Per-session instructions |
+| `POST /api/instructions/{sid}/turn` | One-shot turn supplement |
+| `WS /ws/events` | Real-time event stream for UI |
+
+## OpenClaw Integration
+
+The gateway ships with an [OpenClaw](https://openclaw.dev) plugin at `openclaw/clawfinger/` providing 35+ tools for phone call control, robot commands, spatial memory, and perception — all accessible from OpenClaw agents and slash commands.
+
+## Documentation
+
+- [Phone Gateway](skills/phone-gateway/SKILL.md) — phone API, call policy, agent protocol
+- [Robot Gateway](skills/robot-gateway/SKILL.md) — robot API, transport, perception, spatial memory
+- [Control Center](skills/control-center/SKILL.md) — browser UI panels and features
+- [Agent Takeover](skills/agent-takeover/SKILL.md) — takeover lifecycle and turn protocol
+- [OpenClaw Plugin](skills/openclaw-clawfinger/SKILL.md) — all plugin tools and slash commands
+- [Voice Gateway](skills/voice-gateway/SKILL.md) — installation, configuration, architecture
 
 ## License
 
