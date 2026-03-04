@@ -3,6 +3,7 @@ uvicorn[standard]>=0.34
 httpx>=0.28
 python-multipart>=0.0.18
 mlx-lm>=0.22
+mlx-vlm>=0.3
 mlx-audio>=0.2
 websockets>=13.0
 chromadb>=0.5

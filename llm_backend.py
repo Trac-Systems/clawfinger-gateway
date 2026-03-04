@@ -17,10 +17,27 @@ except Exception:
     mlx_generate = None
     mlx_load = None
 
+try:
+    from mlx_vlm import load as vlm_load
+    from mlx_vlm import generate as vlm_generate
+    from mlx_vlm.prompt_utils import apply_chat_template as vlm_apply_chat_template
+    from mlx_vlm.utils import load_config as vlm_load_config
+except Exception:
+    vlm_load = None
+    vlm_generate = None
+    vlm_apply_chat_template = None
+    vlm_load_config = None
+
 _LOCAL_MODEL: Any | None = None
 _LOCAL_TOKENIZER: Any | None = None
 _LOCAL_MODEL_NAME: str = ""
 _LOCAL_CONTEXT_WINDOW: int = 0  # auto-detected from model.args
+
+# VLM (Vision Language Model) state — separate from text-only LM
+_VLM_MODEL: Any | None = None
+_VLM_PROCESSOR: Any | None = None
+_VLM_CONFIG: Any | None = None
+_VLM_MODEL_NAME: str = ""
 
 
 def _is_local(llm: dict[str, Any]) -> bool:
@@ -39,6 +56,46 @@ def _ensure_local_llm(llm: dict[str, Any]) -> tuple[Any, Any]:
     # Auto-detect context window from model args
     _LOCAL_CONTEXT_WINDOW = getattr(getattr(_LOCAL_MODEL, "args", None), "max_position_embeddings", 0)
     return _LOCAL_MODEL, _LOCAL_TOKENIZER
+
+
+def _ensure_local_vlm(llm: dict[str, Any]) -> tuple[Any, Any, Any]:
+    """Load VLM model + processor + config. Returns (model, processor, config)."""
+    global _VLM_MODEL, _VLM_PROCESSOR, _VLM_CONFIG, _VLM_MODEL_NAME
+    model_name = llm.get("model", "")
+    if _VLM_MODEL is not None and _VLM_PROCESSOR is not None and _VLM_MODEL_NAME == model_name:
+        return _VLM_MODEL, _VLM_PROCESSOR, _VLM_CONFIG
+    if vlm_load is None:
+        raise RuntimeError("mlx-vlm is not available — install with: pip install mlx-vlm")
+    _VLM_MODEL, _VLM_PROCESSOR = vlm_load(model_name)
+    _VLM_CONFIG = vlm_load_config(model_name) if vlm_load_config else {}
+    _VLM_MODEL_NAME = model_name
+    return _VLM_MODEL, _VLM_PROCESSOR, _VLM_CONFIG
+
+
+def _has_images(messages: list[dict[str, Any]]) -> bool:
+    """Check if any message contains image content."""
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    return True
+    return False
+
+
+def _extract_images(messages: list[dict[str, Any]]) -> list[str]:
+    """Extract image URLs/paths from message content arrays."""
+    images = []
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    url_data = item.get("image_url", {})
+                    url = url_data.get("url", "") if isinstance(url_data, dict) else str(url_data)
+                    if url:
+                        images.append(url)
+    return images
 
 
 def _flatten_content(content: Any) -> str:
@@ -92,22 +149,31 @@ def preload() -> None:
     if not _is_local(llm):
         return
     try:
-        _ensure_local_llm(llm)
-        ctx = f", context_window={_LOCAL_CONTEXT_WINDOW}" if _LOCAL_CONTEXT_WINDOW else ""
-        print(f"[gateway] LLM preloaded: {llm['model']}{ctx}")
+        if llm.get("multimodal") and vlm_load is not None:
+            _ensure_local_vlm(llm)
+            print(f"[gateway] VLM preloaded: {llm['model']} (multimodal)")
+        else:
+            _ensure_local_llm(llm)
+            ctx = f", context_window={_LOCAL_CONTEXT_WINDOW}" if _LOCAL_CONTEXT_WINDOW else ""
+            print(f"[gateway] LLM preloaded: {llm['model']}{ctx}")
     except Exception as exc:
         print(f"[gateway] LLM preload failed: {exc}")
 
 
-def generate(messages: list[dict[str, Any]], raw: bool = False) -> tuple[str, float, str]:
+def generate(messages: list[dict[str, Any]], raw: bool = False,
+             llm_override: dict[str, Any] | None = None) -> tuple[str, float, str]:
     """Generate LLM reply. Returns (reply_text, llm_ms, model_name).
 
     When raw=True: apply only safe_text() (sanitize control chars), skip
     trim_for_tts() which destroys JSON.  Used by robot controller.
     When raw=False (default): apply trim_for_tts() for phone/TTS pipeline.
+    llm_override: optional config dict to use instead of global llm section.
     """
-    llm = config.section("llm")
+    llm = llm_override or config.section("llm")
     if _is_local(llm):
+        # Multimodal model: always use VLM backend (works for text-only too)
+        if llm.get("multimodal") and vlm_load is not None:
+            return _generate_local_vlm(messages, llm, raw=raw)
         return _generate_local(messages, llm, raw=raw)
     return _generate_remote(messages, llm, raw=raw)
 
@@ -134,17 +200,18 @@ def _generate_local(messages: list[dict[str, Any]], llm: dict[str, Any], raw: bo
         kwargs["repetition_penalty"] = llm["repeat_penalty"]
 
     try:
-        text = mlx_generate(model, tokenizer, **kwargs)
+        result = mlx_generate(model, tokenizer, **kwargs)
     except TypeError:
         # Fallback if mlx_lm version doesn't support extra kwargs
-        text = mlx_generate(
+        result = mlx_generate(
             model, tokenizer,
             prompt=prompt,
             max_tokens=llm.get("max_tokens", 400),
             verbose=False,
         )
 
-    text = str(text or "")
+    # mlx_lm may return GenerationResult or string
+    text = getattr(result, "text", None) or str(result or "")
     if raw:
         text = safe_text(text)
     else:
@@ -153,6 +220,61 @@ def _generate_local(messages: list[dict[str, Any]], llm: dict[str, Any], raw: bo
         text = "Got it. Please continue."
 
     return text, (time.perf_counter() - start) * 1000, f"local/{llm['model']}"
+
+
+def _generate_local_vlm(messages: list[dict[str, Any]], llm: dict[str, Any], raw: bool = False) -> tuple[str, float, str]:
+    """Generate via local VLM (multimodal — text + images)."""
+    start = time.perf_counter()
+    model, processor, vlm_cfg = _ensure_local_vlm(llm)
+
+    # Extract images from messages
+    images = _extract_images(messages)
+
+    # Build prompt via tokenizer directly (supports enable_thinking=False).
+    # mlx_vlm's apply_chat_template doesn't properly handle enable_thinking.
+    last_user = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            last_user = _flatten_content(m.get("content", ""))
+            break
+
+    # Use tokenizer for text prompt with thinking disabled
+    tok_messages = [{"role": "user", "content": last_user}]
+    # Prepend system prompt if present
+    for m in messages:
+        if m.get("role") == "system":
+            tok_messages.insert(0, {"role": "system", "content": _flatten_content(m.get("content", ""))})
+            break
+
+    try:
+        formatted_prompt = processor.tokenizer.apply_chat_template(
+            tok_messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=False)
+    except TypeError:
+        # Fallback if tokenizer doesn't support enable_thinking
+        formatted_prompt = vlm_apply_chat_template(
+            processor, vlm_cfg, last_user, num_images=len(images))
+
+    kwargs: dict[str, Any] = {
+        "max_tokens": llm.get("max_tokens", 400),
+        "verbose": False,
+    }
+    if llm.get("temperature", 0.2) > 0:
+        kwargs["temp"] = llm["temperature"]
+
+    result = vlm_generate(model, processor, formatted_prompt,
+                          images if images else None, **kwargs)
+
+    # vlm_generate may return a GenerationResult object or string
+    text = getattr(result, "text", None) or str(result or "")
+    if raw:
+        text = safe_text(text)
+    else:
+        text = trim_for_tts(text)
+    if not text:
+        text = "Got it. Please continue."
+
+    return text, (time.perf_counter() - start) * 1000, f"local-vlm/{llm['model']}"
 
 
 def _generate_remote(messages: list[dict[str, Any]], llm: dict[str, Any], raw: bool = False) -> tuple[str, float, str]:

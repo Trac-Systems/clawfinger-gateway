@@ -22,11 +22,15 @@
       "noise_scale": 0.667,
       "noise_w": 0.8,
       "sentence_silence": 0.2
-    }
+    },
+    "mlx_audio_base": "",
+    "ref_audio": "",
+    "ref_text": ""
   },
 
   "llm": {
-    "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+    "model": "Qwen3.5-4B-4bit",
+    "multimodal": true,
     "base_url": "",
     "api_key": "",
     "max_tokens": 80,
@@ -111,6 +115,9 @@
       "enable_hands": true,
       "enable_low_level": false,
       "wifi_networks": []
+    },
+    "llm": {
+      "_comment": "Optional robot LLM overrides — e.g. different max_tokens or temperature"
     },
     "memory": {
       "enabled": true,
