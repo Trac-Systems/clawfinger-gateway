@@ -427,25 +427,19 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
 
   <!-- Task Control -->
   <div class="panel">
-    <div class="panel-head">Task Control</div>
+    <div class="panel-head">Task Control <span id="robot-plan-badge" class="badge" style="display:none;background:rgba(57,175,255,0.15);color:var(--blue)">--</span></div>
     <div class="panel-body">
-      <label style="font-size:12px;color:var(--fg2)">Start project (text prompt → LLM plans &amp; executes):</label>
-      <div class="row" style="margin-top:4px">
+      <div class="row" style="margin-top:0">
         <input id="robot-task-input" placeholder="e.g. find a glass and bring it to me" style="flex:1">
         <button onclick="submitRobotProject()">Start</button>
         <button class="danger" onclick="cancelRobotProject()" id="btn-cancel-project" style="display:none">Cancel</button>
       </div>
       <div id="robot-task-feedback" style="font-size:11px;margin-top:4px"></div>
-    </div>
-  </div>
-
-  <!-- Project Plan -->
-  <div class="panel" id="robot-plan-panel" style="display:none">
-    <div class="panel-head">Project Plan <span id="robot-plan-badge" class="badge" style="background:rgba(57,175,255,0.15);color:var(--blue)">--</span></div>
-    <div class="panel-body">
-      <div id="robot-plan-desc" style="font-size:12px;color:var(--fg2);margin-bottom:8px"></div>
-      <div id="robot-plan-steps"></div>
-      <div id="robot-plan-empty" class="empty">No active plan.</div>
+      <div id="robot-plan-panel" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
+        <div id="robot-plan-desc" style="font-size:12px;color:var(--fg2);margin-bottom:4px"></div>
+        <div id="robot-plan-steps"></div>
+        <div id="robot-plan-empty" class="empty" style="margin:0">No active plan.</div>
+      </div>
     </div>
   </div>
 
@@ -1598,13 +1592,14 @@ function updateProjectPlan(data) {
 
   if (cancelBtn) cancelBtn.style.display = isActive ? '' : 'none';
 
-  if (!plan.length || data.status === 'idle') {
+  if (data.status === 'idle') {
     panel.style.display = 'none';
+    badge.style.display = 'none';
     return;
   }
 
   panel.style.display = '';
-  emptyEl.style.display = 'none';
+  badge.style.display = '';
   descEl.textContent = data.description || '';
 
   if (progress) {
@@ -1612,7 +1607,25 @@ function updateProjectPlan(data) {
     const allDone = progress.completed + progress.skipped + progress.failed >= progress.total;
     badge.style.background = allDone ? 'rgba(63,185,80,0.15)' : 'rgba(57,175,255,0.15)';
     badge.style.color = allDone ? 'var(--green)' : 'var(--blue)';
+  } else {
+    const stepInfo = data.step > 0 ? `step ${data.step}` : 'running';
+    badge.textContent = isActive ? stepInfo : (data.status || '--');
+    badge.style.background = isActive ? 'rgba(57,175,255,0.15)' : 'rgba(63,185,80,0.15)';
+    badge.style.color = isActive ? 'var(--blue)' : 'var(--green)';
   }
+
+  if (!plan.length) {
+    if (isActive) {
+      emptyEl.style.display = '';
+      emptyEl.textContent = data.step > 0 ? `Executing (${data.step} action${data.step !== 1 ? 's' : ''} so far)...` : 'Starting...';
+    } else {
+      emptyEl.style.display = '';
+      emptyEl.textContent = `Done (${data.step} action${data.step !== 1 ? 's' : ''}).`;
+    }
+    stepsEl.innerHTML = '';
+    return;
+  }
+  emptyEl.style.display = 'none';
 
   const icons = {completed:'\u2713', active:'\u2192', failed:'\u2717', skipped:'\u2013', pending:'\u25CB'};
   const colors = {completed:'var(--green)', active:'var(--blue)', failed:'var(--red)', skipped:'var(--fg2)', pending:'var(--fg2)'};

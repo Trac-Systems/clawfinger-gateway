@@ -1157,9 +1157,20 @@ async def _finish_project(action: str, params: dict) -> None:
         "steps": _PROJECT["step"],
     }, endpoint="robot")
 
-    _PROJECT = None
     _TASK = None
     _PAUSE_EVENT.set()
+    # Keep project visible briefly so UI can show final state
+    asyncio.create_task(_clear_project_after(5))
+
+
+async def _clear_project_after(seconds: float):
+    """Clear _PROJECT after a delay so the UI can show final state."""
+    global _PROJECT
+    pid = _PROJECT["project_id"] if _PROJECT else None
+    await asyncio.sleep(seconds)
+    # Only clear if same project (a new one may have started)
+    if _PROJECT and _PROJECT.get("project_id") == pid and _PROJECT.get("status") != "active":
+        _PROJECT = None
 
 
 # ---------------------------------------------------------------------------
@@ -1190,9 +1201,9 @@ async def cancel_project() -> dict:
     }, endpoint="robot")
 
     msg = f"Cancelled project: {_PROJECT.get('description', '')}"
-    _PROJECT = None
     _TASK = None
     _PAUSE_EVENT.set()
+    asyncio.create_task(_clear_project_after(5))
 
     return {"ok": True, "message": msg}
 
