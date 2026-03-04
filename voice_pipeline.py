@@ -110,6 +110,33 @@ def _synthesize_kokoro(text: str, tts: dict, asr: dict) -> bytes:
     return resp.content
 
 
+def _synthesize_routed(text: str, lang: str, voice: str | None = None,
+                       speed: float | None = None) -> bytes:
+    """Synthesize text, routing to Piper (de) or Kokoro (en) based on *lang*.
+
+    *voice* and *speed* override Kokoro defaults when provided.
+    """
+    tts = config.section("tts")
+    asr = config.section("asr")
+    trimmed = _trim_for_tts(text)
+
+    if lang == "de":
+        try:
+            return _synthesize_piper(trimmed)
+        except Exception as exc:
+            log.warning("Piper TTS failed, falling back to English Kokoro: %s", exc)
+            # fall through to Kokoro
+
+    # Kokoro — apply overrides if given
+    if voice or speed:
+        tts = dict(tts)
+        if voice:
+            tts["voice"] = voice
+        if speed:
+            tts["speed"] = speed
+    return _synthesize_kokoro(trimmed, tts, asr)
+
+
 def synthesize(text: str) -> tuple[bytes, float]:
     """Run TTS on text. Routes to Piper (German) or Kokoro (English) based on tts.lang.
 
@@ -117,18 +144,23 @@ def synthesize(text: str) -> tuple[bytes, float]:
     with a log warning instead of crashing.
     """
     tts = config.section("tts")
-    asr = config.section("asr")
     start = time.perf_counter()
+    wav = _synthesize_routed(text, tts.get("lang", "en"))
+    return wav, (time.perf_counter() - start) * 1000
 
-    if tts.get("lang", "en") == "de":
-        try:
-            wav = _synthesize_piper(_trim_for_tts(text))
-        except Exception as exc:
-            log.warning("Piper TTS failed, falling back to English Kokoro: %s", exc)
-            wav = _synthesize_kokoro(_trim_for_tts(text), tts, asr)
-    else:
-        wav = _synthesize_kokoro(_trim_for_tts(text), tts, asr)
 
+def synthesize_robot(text: str) -> tuple[bytes, float]:
+    """Run TTS for robot voice. Uses robot.voice_lang for language routing,
+    robot.voice / robot.voice_speed for Kokoro overrides.
+    """
+    robot = config.section("robot")
+    start = time.perf_counter()
+    wav = _synthesize_routed(
+        text,
+        lang=robot.get("voice_lang", "en"),
+        voice=robot.get("voice"),
+        speed=robot.get("voice_speed"),
+    )
     return wav, (time.perf_counter() - start) * 1000
 
 

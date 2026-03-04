@@ -29,6 +29,9 @@ _MESSAGES: list[dict[str, Any]] = []
 _TAKEOVER_AGENT: str | None = None
 _TURN_FUTURES: dict[str, asyncio.Future] = {}  # request_id -> Future for agent replies
 
+# Speech callback — set by app.py to synthesize TTS + send over transport
+_SPEAK_CB: Any | None = None  # async callable(text: str) -> None
+
 # Ensure autonomous loop can run initially
 _PAUSE_EVENT.set()
 
@@ -207,13 +210,24 @@ Use {{"action": "load_skill", "params": {{"package": "<name>", "topic": "<topic>
 
 {('## Fast-Path Skills (coming soon)' + chr(10) + chr(10).join(fast_lines)) if fast_lines else ""}
 
+## Multi-Step Projects
+For complex tasks, first output a plan using:
+{{"say": "Let me plan this out...", "do": {{"action": "plan_project", "params": {{"steps": ["step 1 description", "step 2 description", ...]}}}}, "continue": true}}
+
+Then execute each step sequentially, announcing progress:
+{{"say": "Step 1 of 3: finding the glass", "do": {{"action": "detect_object", "params": {{"class": "glass"}}}}, "continue": true}}
+
+After each step, verify the result before proceeding. Use detect_object to visually confirm.
+
 ## Rules
 1. For tasks you have knowledge about, load the relevant knowledge first.
 2. Always look before acting — use detect_object for precise positions.
-3. When uncertain about an object, ask the user (ask_user action).
+3. When uncertain about an object, use confirm_visual or ask the user (ask_user action).
 4. Keep speech concise — you're talking in real-time.
 5. If the user says "stop", cancel the current task immediately.
 6. Output done/abort when a project is finished or impossible.
+7. For complex tasks with 3+ steps, always create a plan first.
+8. Announce each step progress: "Step N of M: doing X"
 
 ## Current State
 Current project: {project_desc}"""
@@ -222,6 +236,12 @@ Current project: {project_desc}"""
 # ---------------------------------------------------------------------------
 # Agent takeover
 # ---------------------------------------------------------------------------
+
+def set_speak_callback(cb) -> None:
+    """Register an async callback for robot speech (TTS + transport send)."""
+    global _SPEAK_CB
+    _SPEAK_CB = cb
+
 
 def set_takeover_agent(agent_id: str | None) -> None:
     """Set or clear the takeover agent."""
@@ -302,7 +322,7 @@ async def handle_voice_turn(transcript: str) -> dict:
             "transcript": transcript,
         }, endpoint="robot")
 
-        text, _, _ = llm_backend.generate(_PROJECT["messages"], raw=True)
+        text, _, _ = llm_backend.generate(_PROJECT["messages"], raw=True, llm_override=config.robot_llm())
         parsed = _parse_robot_response(text)
         _PROJECT["messages"].append({"role": "assistant", "content": text})
 
@@ -321,7 +341,7 @@ async def handle_voice_turn(transcript: str) -> dict:
     messages = [{"role": "system", "content": _build_system_prompt()}]
     messages.append({"role": "user", "content": transcript})
 
-    text, _, _ = llm_backend.generate(messages, raw=True)
+    text, _, _ = llm_backend.generate(messages, raw=True, llm_override=config.robot_llm())
     parsed = _parse_robot_response(text)
     messages.append({"role": "assistant", "content": text})
 
@@ -335,9 +355,11 @@ async def handle_voice_turn(transcript: str) -> dict:
             "messages": messages,
             "step": 0,
             "max_steps": 20,
-            "timeout_sec": 120,
+            "timeout_sec": 300,
             "loaded_knowledge": [],
             "history": [],
+            "plan": [],
+            "plan_step": 0,
         }
 
         # Execute initial action if present
@@ -383,11 +405,29 @@ async def _execute_action(do: dict) -> dict | None:
             await bus.publish("robot.skill.loaded", {"package": pkg, "topic": topic}, endpoint="robot")
         return {"ok": bool(content), "loaded": f"{pkg}/{topic}"}
 
+    if action == "plan_project":
+        # Store the step plan in the active project
+        steps = params.get("steps", [])
+        if _PROJECT and steps:
+            _PROJECT["plan"] = steps
+            _PROJECT["plan_step"] = 0
+            _PROJECT["max_steps"] = max(_PROJECT["max_steps"], len(steps) * 4)
+            await bus.publish("robot.project.planned", {
+                "project_id": _PROJECT["project_id"],
+                "steps": steps,
+                "step_count": len(steps),
+            }, endpoint="robot")
+        return {"ok": True, "step_count": len(steps), "steps": steps}
+
     if action in ("done", "abort"):
         return None  # handled by caller
 
-    if action in ("ask_user", "confirm_visual"):
+    if action in ("ask_user",):
         return None  # handled by caller — pauses for voice
+
+    if action == "confirm_visual":
+        # Visual confirmation pipeline — send cropped image to VLM
+        return await _confirm_visual(params)
 
     if action == "delegate":
         await bus.publish("robot.project.delegate", params, endpoint="robot")
@@ -398,6 +438,10 @@ async def _execute_action(do: dict) -> dict | None:
     if skill and skill.get("execution_mode") == "fast":
         return {"ok": False, "error": "This is a fast-path skill (coming soon). Use available primitives instead."}
 
+    # detect_object: run detection + VLM confirmation pipeline
+    if action == "detect_object":
+        return await _detect_and_confirm(params)
+
     # Regular robot command — validate safety, then dispatch
     command = {"type": action, "params": params}
     safety_err = _validate_command(command)
@@ -405,6 +449,111 @@ async def _execute_action(do: dict) -> dict | None:
         return safety_err
 
     return await _dispatch_command(config.get("robot.model", "unitree_g1"), command)
+
+
+async def _detect_and_confirm(params: dict) -> dict:
+    """Detect object via YOLO-World on robot, then confirm via VLM.
+
+    Pipeline:
+    1. Send detect_object command to robot/sim (runs YOLO-World)
+    2. Get back detections with cropped images
+    3. For each detection, send cropped image to VLM for confirmation
+    4. Return confirmed/denied results
+    """
+    target = params.get("class", params.get("prompt", ""))
+    if not target:
+        return {"ok": False, "error": "detect_object requires 'class' param"}
+
+    # Step 1: Run detection on robot/sim
+    command = {"type": "detect_object", "params": params}
+    safety_err = _validate_command(command)
+    if safety_err:
+        return safety_err
+
+    result = await _dispatch_command(config.get("robot.model", "unitree_g1"), command)
+    if not result.get("ok"):
+        return result
+
+    detections = result.get("detections", [])
+    if not detections:
+        return {"ok": True, "found": False, "detections": [], "message": f"No '{target}' detected"}
+
+    # Step 2: VLM confirmation for each detection with a cropped image
+    confirmed = []
+    for det in detections:
+        cropped_b64 = det.get("cropped_b64", "")
+        if not cropped_b64:
+            # No cropped image — trust the detection
+            confirmed.append({**det, "vlm_verdict": "no_image"})
+            continue
+
+        # Build multimodal message for VLM
+        confirmation_messages = [
+            {"role": "system", "content": "You are a visual confirmation assistant. "
+             "The user will show you a cropped image of a detected object. "
+             "Answer ONLY with: YES, NO, or UNSURE. Nothing else."},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cropped_b64}"}},
+                {"type": "text", "text": f"Is this a '{target}'? Answer YES, NO, or UNSURE."},
+            ]},
+        ]
+
+        try:
+            import asyncio
+            reply, _, _ = await asyncio.to_thread(
+                llm_backend.generate, confirmation_messages, True,
+                config.robot_llm())
+            reply_lower = reply.strip().lower()
+
+            if "yes" in reply_lower:
+                verdict = "yes"
+            elif "no" in reply_lower:
+                verdict = "no"
+            else:
+                verdict = "unsure"
+
+            det_result = {**det, "vlm_verdict": verdict, "vlm_reply": reply.strip()}
+            del det_result["cropped_b64"]  # Don't keep large base64 in result
+            confirmed.append(det_result)
+        except Exception as exc:
+            det_result = {**det, "vlm_verdict": "error", "vlm_error": str(exc)}
+            del det_result["cropped_b64"]
+            confirmed.append(det_result)
+
+    yes_count = sum(1 for d in confirmed if d.get("vlm_verdict") == "yes")
+    unsure_count = sum(1 for d in confirmed if d.get("vlm_verdict") == "unsure")
+
+    return {
+        "ok": True,
+        "found": yes_count > 0,
+        "confirmed": [d for d in confirmed if d["vlm_verdict"] == "yes"],
+        "unsure": [d for d in confirmed if d["vlm_verdict"] == "unsure"],
+        "denied": [d for d in confirmed if d["vlm_verdict"] == "no"],
+        "message": f"Found {yes_count} confirmed, {unsure_count} unsure '{target}'",
+    }
+
+
+async def _confirm_visual(params: dict) -> dict:
+    """Confirm a cropped image via VLM — called when LLM outputs confirm_visual action."""
+    image_b64 = params.get("image_base64", "")
+    question = params.get("question", "What is this object?")
+    if not image_b64:
+        return {"ok": False, "error": "confirm_visual requires 'image_base64' param"}
+
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            {"type": "text", "text": question},
+        ]},
+    ]
+
+    try:
+        import asyncio
+        reply, _, _ = await asyncio.to_thread(
+            llm_backend.generate, messages, True, config.robot_llm())
+        return {"ok": True, "answer": reply.strip()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +586,7 @@ async def _run_autonomous() -> None:
                 return
 
             # Call LLM
-            text, _, _ = llm_backend.generate(_PROJECT["messages"], raw=True)
+            text, _, _ = llm_backend.generate(_PROJECT["messages"], raw=True, llm_override=config.robot_llm())
             parsed = _parse_robot_response(text)
             _PROJECT["messages"].append({"role": "assistant", "content": text})
 
@@ -456,9 +605,13 @@ async def _run_autonomous() -> None:
                 "say": parsed.get("say"),
             }, endpoint="robot")
 
-            # Handle say — send to robot speaker
+            # Handle say — synthesize TTS + send to robot speaker
             if parsed.get("say"):
-                # Note: actual Intercom send happens in app.py voice handler
+                if _SPEAK_CB:
+                    try:
+                        await _SPEAK_CB(parsed["say"])
+                    except Exception:
+                        pass  # TTS errors logged by callback
                 await bus.publish("robot.project.speak", {
                     "text": parsed["say"],
                     "project_id": project_id,
@@ -587,6 +740,8 @@ def current_project() -> dict | None:
         "max_steps": _PROJECT["max_steps"],
         "loaded_knowledge": _PROJECT["loaded_knowledge"],
         "history_count": len(_PROJECT["history"]),
+        "plan": _PROJECT.get("plan", []),
+        "plan_step": _PROJECT.get("plan_step", 0),
     }
 
 

@@ -1454,14 +1454,21 @@ async def ws_events(ws: WebSocket) -> None:
     await bus.subscribe(ws)
     try:
         while True:
-            # Keep connection alive, handle pings
             raw = await ws.receive_text()
             try:
                 msg = json.loads(raw)
-                if msg.get("type") == "ping":
-                    await ws.send_json({"type": "pong"})
             except json.JSONDecodeError:
-                pass
+                continue
+            msg_type = msg.get("type", "")
+            if msg_type == "ping":
+                await ws.send_json({"type": "pong"})
+            elif msg_type == "robot_command":
+                cmd = msg.get("command", {})
+                result = await robot_mod.dispatch_command(
+                    config.get("robot.model", "unitree_g1"),
+                    cmd,
+                )
+                await ws.send_json({"type": "robot.command.ack", **result})
     except WebSocketDisconnect:
         pass
     finally:
@@ -1477,7 +1484,11 @@ async def index() -> HTMLResponse:
     index_path = _STATIC_DIR / "index.html"
     if not index_path.exists():
         return HTMLResponse("<html><body><h2>Control Center UI not found</h2></body></html>")
-    return HTMLResponse(index_path.read_text(encoding="utf-8"))
+    html = index_path.read_text(encoding="utf-8")
+    # Inject bearer token so control-center JS can auth robot API calls
+    token = config.get("bearer_token", "")
+    html = html.replace("<script>", f"<script>window.__BEARER__={json.dumps(token)};", 1)
+    return HTMLResponse(html)
 
 
 # ---------------------------------------------------------------------------
@@ -1569,11 +1580,23 @@ async def _start_ws_transport() -> None:
                     return
             result = await robot_ctrl.handle_voice_turn(transcript)
             if result.get("say"):
-                await bridge.send({
-                    "type": "tts_speak",
-                    "text": result["say"],
-                    "voice": robot_cfg.get("voice", "am_adam"),
-                })
+                try:
+                    wav, tts_ms = await asyncio.to_thread(
+                        voice_pipeline.synthesize_robot, result["say"])
+                    import base64 as _b64
+                    await bridge.send({
+                        "type": "robot_speak",
+                        "audio_base64": _b64.b64encode(wav).decode(),
+                        "sample_rate": 24000,
+                        "text": result["say"],
+                    })
+                except Exception as exc:
+                    log.warning("Robot TTS failed, sending text only: %s", exc)
+                    await bridge.send({
+                        "type": "tts_speak",
+                        "text": result["say"],
+                        "voice": robot_cfg.get("voice", "am_adam"),
+                    })
 
     bridge.on_connected(_on_robot_connected)
     bridge.on_disconnected(_on_robot_disconnected)
@@ -1583,6 +1606,19 @@ async def _start_ws_transport() -> None:
     _intercom_bridge = bridge
     _ws_robot_bridge = bridge
     robot_mod.set_transport(bridge)
+
+    # Register speak callback — synthesize TTS on gateway, send audio to robot
+    async def _robot_speak(text: str) -> None:
+        wav, _ = await asyncio.to_thread(voice_pipeline.synthesize_robot, text)
+        import base64 as _b64
+        await bridge.send({
+            "type": "robot_speak",
+            "audio_base64": _b64.b64encode(wav).decode(),
+            "sample_rate": 24000,
+            "text": text,
+        })
+    robot_ctrl.set_speak_callback(_robot_speak)
+
     await bridge.start()
 
     print("[gateway] WebSocket robot transport ready (waiting for /ws/robot connection)")
@@ -1711,14 +1747,24 @@ async def _start_intercom_transport() -> None:
                 if not accepted:
                     return
             result = await robot_ctrl.handle_voice_turn(transcript)
-            # Send speech to robot speaker via Intercom
+            # Synthesize speech on gateway, send audio bytes via Intercom
             if result.get("say"):
-                await _intercom_bridge.send({
-                    "type": "robot_speak",
-                    "text": result["say"],
-                    "voice": robot_cfg.get("voice", "am_adam"),
-                    "speed": robot_cfg.get("voice_speed", 1.0),
-                })
+                try:
+                    wav, tts_ms = await asyncio.to_thread(
+                        voice_pipeline.synthesize_robot, result["say"])
+                    import base64 as _b64
+                    await _intercom_bridge.send({
+                        "type": "robot_speak",
+                        "audio_base64": _b64.b64encode(wav).decode(),
+                        "sample_rate": 24000,
+                        "text": result["say"],
+                    })
+                except Exception as exc:
+                    log.warning("Robot TTS failed, sending text only: %s", exc)
+                    await _intercom_bridge.send({
+                        "type": "robot_speak",
+                        "text": result["say"],
+                    })
             # Send gesture command
             if result.get("gesture"):
                 await robot_mod.dispatch_command(
@@ -1744,6 +1790,19 @@ async def _start_intercom_transport() -> None:
     _intercom_bridge.on_message(_on_robot_message)
 
     robot_mod.set_transport(_intercom_bridge)
+
+    # Register speak callback — synthesize TTS on gateway, send audio to robot
+    async def _robot_speak(text: str) -> None:
+        wav, _ = await asyncio.to_thread(voice_pipeline.synthesize_robot, text)
+        import base64 as _b64
+        await _intercom_bridge.send({
+            "type": "robot_speak",
+            "audio_base64": _b64.b64encode(wav).decode(),
+            "sample_rate": 24000,
+            "text": text,
+        })
+    robot_ctrl.set_speak_callback(_robot_speak)
+
     await _intercom_bridge.start()
 
     await bus.publish("transport.started", {"channel": channel}, endpoint="robot")
