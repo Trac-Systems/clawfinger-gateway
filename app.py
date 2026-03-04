@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 import httpx
 
 import agent_interface
+import time_utils
 import config
 import instruction_store
 import llm_backend
@@ -793,6 +794,27 @@ _ROBOT_SETTABLE_SECTIONS = {
 }
 
 
+def _robot_llm_response(llm: dict) -> dict:
+    """Build robot LLM config response (mirrors _llm_config_response pattern)."""
+    return {
+        "model": llm.get("model", ""),
+        "base_url": llm.get("base_url", ""),
+        "has_api_key": bool(llm.get("api_key", "")),
+        "max_tokens": llm.get("max_tokens", 80),
+        "context_tokens": llm.get("context_tokens", 0),
+        "max_history_turns": llm.get("max_history_turns", 8),
+        "temperature": llm.get("temperature", 0.25),
+        "top_p": llm.get("top_p", 1.0),
+        "top_p_enabled": llm.get("top_p_enabled", True),
+        "top_k": llm.get("top_k", 0),
+        "top_k_enabled": llm.get("top_k_enabled", True),
+        "repeat_penalty": llm.get("repeat_penalty", 1.0),
+        "stop": llm.get("stop", []),
+        "system_prompt": llm.get("system_prompt", ""),
+        "is_local": not llm.get("base_url"),
+    }
+
+
 def _robot_config_response() -> dict:
     """Build robot config response dict — returns full robot config."""
     robot_cfg = config.section("robot")
@@ -819,8 +841,11 @@ def _robot_config_response() -> dict:
         "camera": robot_cfg.get("camera", {}),
         "audio_monitor": robot_cfg.get("audio_monitor", {}),
         "memory": robot_cfg.get("memory", {}),
-        "llm": robot_cfg.get("llm", {}),
+        "llm": _robot_llm_response(robot_cfg.get("llm", {})),
         "model_config": robot_cfg.get(model_name, {}),
+        "kokoro_voices": _KOKORO_VOICES,
+        "piper_voices": _PIPER_VOICES,
+        "piper_emotions": _PIPER_EMOTIONS,
     }
     # Add transport state when bridge is available
     if _intercom_bridge is not None:
@@ -841,6 +866,20 @@ async def update_robot_config(request: Request) -> JSONResponse:
     body = await request.json()
     robot_cfg = config.section("robot")
     model_name = robot_cfg.get("model", "unitree_g1")
+
+    # Validate Piper availability before allowing German voice
+    new_voice_lang = body.get("voice_lang")
+    if new_voice_lang == "de" and robot_cfg.get("voice_lang", "en") != "de":
+        piper_base = config.get("tts.piper.base", "http://127.0.0.1:5123")
+        try:
+            probe = httpx.post(piper_base, json={"text": "test"}, timeout=5)
+            if probe.status_code != 200:
+                raise Exception(f"HTTP {probe.status_code}")
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": f"Piper TTS is not running on {piper_base} — cannot switch to German."},
+                status_code=400,
+            )
 
     for key, value in body.items():
         if key in _ROBOT_SECURITY_KEYS:
@@ -899,6 +938,19 @@ async def cancel_robot_project(request: Request) -> JSONResponse:
     _check_bearer(request)
     result = await robot_ctrl.cancel_project()
     return JSONResponse(result)
+
+
+@app.post("/api/robot/project/start")
+async def start_robot_project(request: Request) -> JSONResponse:
+    """Start a robot project from a text prompt (same as voice turn)."""
+    _check_bearer(request)
+    body = await request.json()
+    text = body.get("text", "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "text required"}, status_code=400)
+    result = await robot_ctrl.handle_voice_turn(text)
+    project = robot_ctrl.current_project()
+    return JSONResponse({"ok": True, "say": result.get("say"), "project": project})
 
 
 # ---------------------------------------------------------------------------
@@ -1397,6 +1449,13 @@ async def memory_query(request: Request) -> JSONResponse:
     n_results = body.get("n_results", 10)
     filters = body.get("filters", {})
 
+    # Natural time filter support
+    time_filter = body.get("time_filter", "")
+    if time_filter:
+        parsed = time_utils.parse_natural_time(time_filter)
+        if parsed:
+            filters["time_start"], filters["time_end"] = parsed
+
     if query_type == "text":
         text = body.get("text", "")
         if not text:
@@ -1468,6 +1527,20 @@ async def memory_query(request: Request) -> JSONResponse:
 async def memory_stats(request: Request) -> JSONResponse:
     _check_bearer(request)
     return JSONResponse(robot_memory.stats())
+
+
+@app.post("/api/robot/memory/last_seen")
+async def memory_last_seen(request: Request) -> JSONResponse:
+    _check_bearer(request)
+    body = await request.json()
+    result = robot_memory.last_seen(
+        entity_name=body.get("entity_name"),
+        entity_type=body.get("entity_type"),
+        room=body.get("room"),
+    )
+    if result is None:
+        return JSONResponse({"found": False})
+    return JSONResponse({"found": True, "result": result})
 
 
 # ---------------------------------------------------------------------------

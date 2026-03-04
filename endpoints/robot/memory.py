@@ -21,6 +21,8 @@ import uuid
 from io import BytesIO
 from typing import Any
 
+import time_utils
+
 logger = logging.getLogger("gateway.robot.memory")
 
 # ---------------------------------------------------------------------------
@@ -692,7 +694,7 @@ def _format_results(query_results: dict) -> list[dict]:
             item["document"] = documents[i]
         items.append(item)
 
-    return items
+    return time_utils.annotate_results(items)
 
 
 def query_text(text: str, n_results: int = 10,
@@ -802,7 +804,7 @@ def person_sightings(person_id: str, time_start: float | None = None,
         if i < len(results.get("metadatas", [])):
             item.update(results["metadatas"][i])
         items.append(item)
-    return items
+    return time_utils.annotate_results(items)
 
 
 def object_sightings(object_id: str, time_start: float | None = None,
@@ -837,7 +839,7 @@ def object_sightings(object_id: str, time_start: float | None = None,
         if i < len(results.get("metadatas", [])):
             item.update(results["metadatas"][i])
         items.append(item)
-    return items
+    return time_utils.annotate_results(items)
 
 
 def room_activity(room: str, time_start: float | None = None,
@@ -861,7 +863,64 @@ def room_activity(room: str, time_start: float | None = None,
         if i < len(results.get("metadatas", [])):
             item.update(results["metadatas"][i])
         items.append(item)
-    return items
+    return time_utils.annotate_results(items)
+
+
+# ---------------------------------------------------------------------------
+# Last seen
+# ---------------------------------------------------------------------------
+
+
+def last_seen(entity_name: str | None = None,
+              entity_type: str | None = None,
+              room: str | None = None) -> dict | None:
+    """Return the single most recent matching observation with ``time_ago``.
+
+    Filters by any combination of entity_name, entity_type, and room.
+    Returns None if nothing matches.
+    """
+    if not _initialized:
+        return None
+
+    conditions: list[dict] = []
+    if entity_name:
+        conditions.append({"entity_name": entity_name})
+    if entity_type:
+        conditions.append({"entity_type": entity_type})
+    if room:
+        conditions.append({"room": room})
+
+    where = None
+    if len(conditions) > 1:
+        where = {"$and": conditions}
+    elif len(conditions) == 1:
+        where = conditions[0]
+
+    kwargs: dict[str, Any] = {}
+    if where:
+        kwargs["where"] = where
+
+    results = _observations.get(**kwargs)
+    items: list[dict] = []
+    for i, obs_id in enumerate(results.get("ids", [])):
+        item = {"id": obs_id}
+        if i < len(results.get("metadatas", [])):
+            item.update(results["metadatas"][i])
+        items.append(item)
+
+    if not items:
+        return None
+
+    # Sort by timestamp descending, return most recent
+    items.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+    result = items[0]
+    ts = result.get("timestamp")
+    if ts is not None:
+        try:
+            result["time_ago"] = time_utils.relative(float(ts))
+        except (ValueError, TypeError):
+            pass
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -869,11 +928,11 @@ def room_activity(room: str, time_start: float | None = None,
 # ---------------------------------------------------------------------------
 
 def stats() -> dict:
-    """Return collection counts and model info."""
+    """Return collection counts, model info, and temporal range."""
     if not _initialized:
         return {"initialized": False}
 
-    return {
+    result = {
         "initialized": True,
         "persons": _persons.count(),
         "objects": _objects.count(),
@@ -882,3 +941,24 @@ def stats() -> dict:
         "observations": _observations.count(),
         "clip_loaded": clip_available(),
     }
+
+    # Add temporal range from observations
+    obs_count = result["observations"]
+    if obs_count > 0:
+        try:
+            all_obs = _observations.get(limit=obs_count)
+            timestamps = []
+            for meta in all_obs.get("metadatas", []):
+                ts = meta.get("timestamp")
+                if ts is not None:
+                    timestamps.append(float(ts))
+            if timestamps:
+                oldest = min(timestamps)
+                newest = max(timestamps)
+                result["oldest_ago"] = time_utils.relative(oldest)
+                result["newest_ago"] = time_utils.relative(newest)
+                result["time_span"] = time_utils.duration(newest - oldest)
+        except Exception:
+            pass  # temporal stats are best-effort
+
+    return result

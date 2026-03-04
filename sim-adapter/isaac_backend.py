@@ -653,9 +653,12 @@ class IsaacSimBackend:
     _SPAWN_QUAT = (1.0, 0.0, 0.0, 0.0)  # w,x,y,z
 
     # Standing damping: reduce policy actions when velocity command is zero.
-    # The RL policy produces large leg actions (~0.72 radian offset) even at
-    # zero command, causing drift. This factor scales them down when standing.
-    STANDING_ACTION_SCALE = 0.65
+    # The RL policy produces large actions (act_max ~5-7) even at zero command.
+    # With env action scale=0.5, unscaled standing gives ~2.5 radian joint offsets
+    # causing fast circular drift. Legacy wholebody (ACTION_SCALE=0.25) uses 0.65.
+    # Velocity loco (env scale=0.5) needs a much tighter standing scale.
+    STANDING_ACTION_SCALE = 0.65       # Legacy wholebody controller
+    STANDING_ACTION_SCALE_VELO = 0.3   # Velocity controller: 5*0.3*0.5 = 0.75 rad
 
     def _reset_env(self, reason: str) -> bool:
         """Reset the environment and locomotion controller.
@@ -730,10 +733,13 @@ class IsaacSimBackend:
             if self._locomotion is not None:
                 action = self._locomotion.compute_action()
                 if _is_velocity_loco:
-                    # Velocity locomotion policy: properly trained, no warmup
-                    # or action scaling hacks needed. Just run the policy.
+                    # Velocity loco: let the policy run unscaled (it needs full
+                    # actions to balance). Drift is countered in the physics
+                    # step below by zeroing root velocity when standing.
                     if self._warmup_remaining > 0:
-                        self._warmup_remaining = 0  # Skip warmup entirely
+                        self._warmup_remaining -= 1
+                        if self._warmup_remaining == 0:
+                            print(f"[isaac] Warmup complete — releasing kinematic hold", flush=True)
                 else:
                     # Legacy wholebody controller: needs STANDING_ACTION_SCALE
                     if self._warmup_remaining > 0:
@@ -774,6 +780,20 @@ class IsaacSimBackend:
                         break
                 except Exception as exc:
                     logger.debug("Warmup kinematic hold failed: %s", exc)
+
+            # Standing drift correction: when velocity command is zero, zero
+            # out the root linear velocity each step. The policy keeps joints
+            # active for balance but the base stays planted. This prevents the
+            # slow circular drift caused by asymmetric policy outputs.
+            elif _is_velocity_loco and not self._walking:
+                try:
+                    for _name, art in self._articulations.items():
+                        art.write_root_velocity_to_sim(
+                            torch.zeros(1, 6, device=self.device),
+                        )
+                        break
+                except Exception:
+                    pass
 
             self._step_count += 1
             self._extract_state()

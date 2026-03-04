@@ -812,12 +812,58 @@ The gateway includes a persistent spatial memory subsystem for the robot. It sto
 | `room` | `{"type": "room", "room": "kitchen"}` | All entities last seen in a room |
 | `recent` | `{"type": "recent", "since": "2026-03-01T00:00:00Z"}` | All observations since timestamp |
 
+### Time-Aware Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/robot/memory/last_seen` | Most recent observation matching `entity_name`, `entity_type`, and/or `room`. Returns `time_ago` field. |
+| `POST` | `/api/robot/memory/query` | Accepts `time_filter` with natural expressions: `"last hour"`, `"today"`, `"yesterday"`, `"last 3 days"` |
+| `GET` | `/api/robot/memory/stats` | Now includes `oldest_ago`, `newest_ago`, `time_span` temporal range |
+
+All query results include a `time_ago` field (e.g. "5 min ago", "yesterday") on every observation that has a `timestamp`.
+
 ### Usage Notes
 
 - The robot writes observations automatically as it navigates and uses VLM scene descriptions
 - Agents can also write observations directly via the REST API
 - Reference photos are stored as base64 in the DB and used for visual re-identification on the robot
 - The `clawfinger_memory_*` OpenClaw tools wrap these endpoints — see [openclaw-clawfinger/SKILL.md](../openclaw-clawfinger/SKILL.md)
+
+---
+
+## Time Awareness
+
+The robot system is fully time-aware. The `time_utils.py` module provides all time functions used across the system.
+
+### Robot System Prompt
+
+The robot LLM sees current time and project elapsed time in every prompt:
+
+```
+## Current State
+Current time: Tuesday, 2026-03-04 14:32 CET (afternoon)
+Project elapsed: 1m 12s
+Current project: Find my keys
+
+Step 1/3: ✓ Walk to kitchen [18s]
+Step 2/3: → Search counter [running 12s]
+Step 3/3: ○ Report findings
+```
+
+Step durations show how long each completed step took and how long the active step has been running.
+
+### Spatial Memory Temporal Features
+
+- **`time_ago`** on all query results: `"5 min ago"`, `"yesterday"`, `"3 days ago"`
+- **`POST /api/robot/memory/last_seen`**: Most recent observation for an entity
+- **`time_filter`** on `POST /api/robot/memory/query`: Natural expressions like `"last hour"`, `"today"`, `"yesterday"`, `"last 3 days"`
+- **Enhanced stats**: `oldest_ago`, `newest_ago`, `time_span` in `GET /api/robot/memory/stats`
+
+### Configuration
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `timezone` | string | `"Europe/Berlin"` | Timezone for time display and time-of-day calculation |
 
 ---
 

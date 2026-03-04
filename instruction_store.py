@@ -9,6 +9,8 @@ modified at runtime.
 from __future__ import annotations
 
 import config
+import session_store
+import time_utils
 
 _SESSION: dict[str, str] = {}
 _TURN: dict[str, str] = {}
@@ -48,7 +50,18 @@ def build_system_prompt(sid: str) -> str:
     base = get_session(sid) or get_base()
     turn_extra = pop_turn(sid)
     if turn_extra:
-        return base + "\n\n" + turn_extra
+        base = base + "\n\n" + turn_extra
+
+    # Inject time context + call duration
+    time_line = time_utils.time_context_line()
+    duration_line = ""
+    meta = session_store.get_session_detail(sid)
+    if meta:
+        created = meta.get("created_at")
+        if created:
+            elapsed = time_utils.now_unix() - created
+            duration_line = f"\nCall duration so far: {time_utils.duration(elapsed)}"
+    base += f"\n\n[{time_line}{duration_line}]"
     return base
 
 

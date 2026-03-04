@@ -82,6 +82,15 @@ The **Memory** sub-section provides a UI for the spatial memory subsystem.
 - Filter by type (person / object / room) and time range
 - Results shown as cards with entity details and observation history
 
+### Time Display
+
+The control center uses relative timestamps throughout:
+
+- **`relativeTime(unixTs)`** JS helper mirrors `time_utils.relative()` — "5 min ago", "yesterday", "3 days ago"
+- **Memory query results** show relative time instead of raw timestamps (hover for full date)
+- **Memory stats** display temporal range: oldest and newest observation times
+- Full date/time available on hover via HTML `title` attribute
+
 ### Notes
 
 - Reference photos are stored in the DB and used for visual re-identification on the robot

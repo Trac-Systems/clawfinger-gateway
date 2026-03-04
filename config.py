@@ -172,6 +172,7 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
     cfg.setdefault("host", "127.0.0.1")
     cfg.setdefault("port", 8996)
     cfg.setdefault("bearer_token", "")
+    cfg.setdefault("timezone", "Europe/Berlin")
 
     # ASR defaults
     asr = cfg.setdefault("asr", {})
@@ -283,10 +284,23 @@ def _ensure_defaults(cfg: dict[str, Any]) -> None:
     g1.setdefault("enable_hands", True)
     g1.setdefault("enable_low_level", False)
     g1.setdefault("wifi_networks", [])
-    # Robot LLM — overrides global llm.* when set. Falls back to global llm.* for unset keys.
+    # Robot LLM — standalone config, same defaults as global llm.
     robot_llm = robot.setdefault("llm", {})
-    # Empty by default — robot uses global llm.* unless robot.llm.model is set.
-    # Example: {"model": "Qwen3.5-4B-4bit", "multimodal": true, "max_tokens": 200}
+    robot_llm.setdefault("model", llm.get("model", ""))
+    robot_llm.setdefault("base_url", "")
+    robot_llm.setdefault("api_key", "")
+    robot_llm.setdefault("max_tokens", llm.get("max_tokens", 80))
+    robot_llm.setdefault("temperature", llm.get("temperature", 0.25))
+    robot_llm.setdefault("top_p", 1.0)
+    robot_llm.setdefault("top_p_enabled", True)
+    robot_llm.setdefault("top_k", 0)
+    robot_llm.setdefault("top_k_enabled", True)
+    robot_llm.setdefault("repeat_penalty", 1.0)
+    robot_llm.setdefault("stop", [])
+    robot_llm.setdefault("context_tokens", 0)
+    robot_llm.setdefault("multimodal", True)
+    robot_llm.setdefault("system_prompt", "You are a physical robot. Respond with short, direct statements. No emojis, no markdown, no tables. Report observations and actions as plain facts.")
+    robot_llm.setdefault("max_history_turns", 8)
     memory = robot.setdefault("memory", {})
     memory.setdefault("enabled", True)
     memory.setdefault("db_path", "data/spatial_memory")
@@ -404,15 +418,6 @@ def section(name: str) -> dict[str, Any]:
 
 
 def robot_llm() -> dict[str, Any]:
-    """Get resolved LLM config for the robot endpoint.
-
-    Returns robot.llm merged over global llm — robot.llm keys take precedence.
-    If robot.llm.model is not set, returns the global llm config unchanged.
-    """
+    """Get robot LLM config (standalone — not merged with global llm)."""
     cfg = load()
-    base = dict(cfg.get("llm", {}))
-    override = cfg.get("robot", {}).get("llm", {})
-    if not override or not override.get("model"):
-        return base
-    base.update({k: v for k, v in override.items() if v is not None and v != ""})
-    return base
+    return dict(cfg.get("robot", {}).get("llm", {}))

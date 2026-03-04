@@ -242,9 +242,26 @@ class CommandHandler:
             return {"ok": True, "detail": "sitting (sim)"}
 
         elif command == "walk":
-            vx = params.get("vx", 0.3)
-            vy = params.get("vy", 0.0)
-            vyaw = params.get("vyaw", 0.0)
+            # Support both raw vx/vy/vyaw and high-level direction/speed
+            direction = params.get("direction", "forward")
+            speed = params.get("speed", 0.3)
+            vx = params.get("vx")
+            vy = params.get("vy")
+            vyaw = params.get("vyaw")
+            if vx is None and vy is None and vyaw is None:
+                # Translate direction to velocity
+                if direction == "backward":
+                    vx, vy, vyaw = -speed, 0.0, 0.0
+                elif direction == "left":
+                    vx, vy, vyaw = 0.0, speed, 0.0
+                elif direction == "right":
+                    vx, vy, vyaw = 0.0, -speed, 0.0
+                else:  # forward
+                    vx, vy, vyaw = speed, 0.0, 0.0
+            else:
+                vx = vx or 0.0
+                vy = vy or 0.0
+                vyaw = vyaw or 0.0
             self.sim.apply_walk(vx, vy, vyaw)
             return {"ok": True, "detail": f"walking vx={vx:.2f} vy={vy:.2f} vyaw={vyaw:.2f}"}
 
@@ -523,58 +540,77 @@ async def observation_loop(sim: SimBackend, gw: GatewayClient, interval: float =
     Runs at a low rate (default every 5s) to avoid overwhelming the GPU.
     Only sends when connected and CLIP is initialized.
     """
+    print("[adapter] observation_loop starting...", flush=True)
     try:
         import clip_embedder
-    except ImportError:
-        print("[adapter] CLIP embedder not available, observation loop disabled", flush=True)
+        print("[adapter] clip_embedder imported OK", flush=True)
+    except ImportError as e:
+        print(f"[adapter] CLIP embedder not available ({e}), observation loop disabled", flush=True)
+        return
+    except Exception as e:
+        print(f"[adapter] clip_embedder import error: {e}", flush=True)
         return
 
-    # Try to initialize CLIP
-    if not clip_embedder.init(device="cuda"):
+    # Try to initialize CLIP — run in thread pool to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    try:
+        ok = await loop.run_in_executor(None, clip_embedder.init, "cuda")
+    except Exception as e:
+        print(f"[adapter] CLIP init exception: {e}", flush=True)
+        return
+    if not ok:
         print("[adapter] CLIP init failed, observation loop disabled", flush=True)
         return
+    print("[adapter] CLIP initialized, observation loop active", flush=True)
 
     obs_count = 0
-    while True:
-        await asyncio.sleep(interval)
-        if not gw.connected:
-            continue
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            if not gw.connected:
+                continue
 
-        frame = sim.capture_camera("head_rgb")
-        if not frame:
-            continue
+            frame = sim.capture_camera("head_rgb")
+            if not frame:
+                continue
 
-        # Run CLIP embedding in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        embedding = await loop.run_in_executor(None, clip_embedder.embed_image, frame)
-        if not embedding:
-            continue
+            # Run CLIP embedding in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(None, clip_embedder.embed_image, frame)
+            if not embedding:
+                continue
 
-        # Get robot pose for spatial metadata
-        pose = sim.get_world_pose()
+            # Get robot pose for spatial metadata
+            pose = sim.get_world_pose()
 
-        obs_count += 1
-        await gw.send({
-            "type": "observation",
-            "embedding": embedding,
-            "metadata": {
-                "source": "head_rgb",
-                "robot_x": pose.get("x", 0.0),
-                "robot_y": pose.get("y", 0.0),
-                "robot_theta": pose.get("theta", 0.0),
-                "world_x": pose.get("x", 0.0),
-                "world_y": pose.get("y", 0.0),
-                "world_z": pose.get("z", 0.0),
-                "timestamp": time.time(),
-                "entity_type": "scene",
-                "depth_available": False,
-            },
-        })
+            obs_count += 1
+            await gw.send({
+                "type": "observation",
+                "embedding": embedding,
+                "metadata": {
+                    "source": "head_rgb",
+                    "robot_x": pose.get("x", 0.0),
+                    "robot_y": pose.get("y", 0.0),
+                    "robot_theta": pose.get("theta", 0.0),
+                    "world_x": pose.get("x", 0.0),
+                    "world_y": pose.get("y", 0.0),
+                    "world_z": pose.get("z", 0.0),
+                    "timestamp": time.time(),
+                    "entity_type": "scene",
+                    "depth_available": False,
+                },
+            })
 
-        if obs_count == 1:
-            print(f"[adapter] First CLIP observation sent ({len(embedding)}-dim)", flush=True)
-        elif obs_count % 100 == 0:
-            print(f"[adapter] CLIP observations sent: {obs_count}", flush=True)
+            if obs_count == 1:
+                print(f"[adapter] First CLIP observation sent ({len(embedding)}-dim)", flush=True)
+            elif obs_count % 100 == 0:
+                print(f"[adapter] CLIP observations sent: {obs_count}", flush=True)
+    except asyncio.CancelledError:
+        print(f"[adapter] observation_loop cancelled after {obs_count} observations", flush=True)
+    except Exception as e:
+        print(f"[adapter] observation_loop crashed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
 
 
 async def state_report_loop(sim: SimBackend, gw: GatewayClient, hz: float = 2.0):

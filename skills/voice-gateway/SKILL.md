@@ -28,6 +28,12 @@ For the full spatial memory API reference (19 REST endpoints, query types, and O
 
 For OpenClaw plugin tools (`clawfinger_memory_*`) and slash commands, see [openclaw-clawfinger/SKILL.md](../openclaw-clawfinger/SKILL.md#spatial-memory-tools).
 
+## Time Awareness
+
+Time context (current time, time-of-day) is injected into all LLM system prompts for both phone and robot endpoints. Phone prompts also include call duration. Robot prompts include project elapsed time and step durations.
+
+All temporal data comes from `time_utils.py` using the configured `timezone` setting (default: `"Europe/Berlin"`).
+
 ## Quick Reference
 
 | Component | Skill |

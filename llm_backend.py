@@ -230,21 +230,12 @@ def _generate_local_vlm(messages: list[dict[str, Any]], llm: dict[str, Any], raw
     # Extract images from messages
     images = _extract_images(messages)
 
-    # Build prompt via tokenizer directly (supports enable_thinking=False).
-    # mlx_vlm's apply_chat_template doesn't properly handle enable_thinking.
-    last_user = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            last_user = _flatten_content(m.get("content", ""))
-            break
-
-    # Use tokenizer for text prompt with thinking disabled
-    tok_messages = [{"role": "user", "content": last_user}]
-    # Prepend system prompt if present
+    # Build full multi-turn prompt (flatten multimodal content to text)
+    tok_messages = []
     for m in messages:
-        if m.get("role") == "system":
-            tok_messages.insert(0, {"role": "system", "content": _flatten_content(m.get("content", ""))})
-            break
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        tok_messages.append({"role": role, "content": _flatten_content(content)})
 
     try:
         formatted_prompt = processor.tokenizer.apply_chat_template(
@@ -340,7 +331,7 @@ def check_health() -> dict:
         return {
             "backend": "mlx_local",
             "model": llm["model"],
-            "loaded": _LOCAL_MODEL is not None,
+            "loaded": _LOCAL_MODEL is not None or _VLM_MODEL is not None,
             "mlx_lm_available": mlx_load is not None,
         }
     return {

@@ -429,15 +429,23 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
   <div class="panel">
     <div class="panel-head">Task Control</div>
     <div class="panel-body">
-      <label style="font-size:12px;color:var(--fg2)">Submit task:</label>
+      <label style="font-size:12px;color:var(--fg2)">Start project (text prompt → LLM plans &amp; executes):</label>
       <div class="row" style="margin-top:4px">
-        <input id="robot-task-input" data-cap="locomotion" placeholder="e.g. walk to the door" style="flex:1" disabled>
-        <button data-cap="locomotion" onclick="submitRobotTask()" disabled>Send</button>
+        <input id="robot-task-input" placeholder="e.g. find a glass and bring it to me" style="flex:1">
+        <button onclick="submitRobotProject()">Start</button>
+        <button class="danger" onclick="cancelRobotProject()" id="btn-cancel-project" style="display:none">Cancel</button>
       </div>
       <div id="robot-task-feedback" style="font-size:11px;margin-top:4px"></div>
-      <hr style="border-color:var(--border);margin:12px 0">
-      <label style="font-size:12px;color:var(--fg2)">Task history:</label>
-      <div id="robot-task-history"><div class="empty">No tasks.</div></div>
+    </div>
+  </div>
+
+  <!-- Project Plan -->
+  <div class="panel" id="robot-plan-panel" style="display:none">
+    <div class="panel-head">Project Plan <span id="robot-plan-badge" class="badge" style="background:rgba(57,175,255,0.15);color:var(--blue)">--</span></div>
+    <div class="panel-body">
+      <div id="robot-plan-desc" style="font-size:12px;color:var(--fg2);margin-bottom:8px"></div>
+      <div id="robot-plan-steps"></div>
+      <div id="robot-plan-empty" class="empty">No active plan.</div>
     </div>
   </div>
 
@@ -548,24 +556,51 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
       <hr style="border-color:var(--border);margin:12px 0">
 
       <!-- Voice -->
-      <label style="font-size:12px;color:var(--fg2)">Voice:</label>
-      <select id="robot-voice-select">
-        <option value="am_adam">am_adam (EN male)</option>
-        <option value="af_heart">af_heart (EN female)</option>
-        <option value="am_michael">am_michael (EN male)</option>
-        <option value="bf_emma">bf_emma (EN female)</option>
-      </select>
-      <div class="row" style="margin-top:6px">
+      <div style="margin-bottom:8px">
         <label style="font-size:12px;color:var(--fg2)">Language:</label>
-        <select id="robot-voice-lang" style="flex:1">
-          <option value="en">English (Kokoro)</option>
-          <option value="de">Deutsch (Piper)</option>
-        </select>
+        <div class="row" style="margin-top:4px;gap:16px">
+          <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="radio" name="robot-voice-lang" value="en" checked onchange="switchRobotVoiceLang('en')" style="width:auto"> English
+          </label>
+          <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="radio" name="robot-voice-lang" value="de" onchange="switchRobotVoiceLang('de')" style="width:auto"> German
+          </label>
+        </div>
       </div>
-      <div class="row" style="margin-top:4px">
-        <label style="font-size:12px;color:var(--fg2)">Speed:</label>
-        <input type="range" id="robot-voice-speed" min="0.5" max="2.0" step="0.1" value="1.0" style="flex:1">
-        <span id="robot-voice-speed-val" style="font-size:12px;width:35px">1.0</span>
+      <!-- English (Kokoro) voice controls -->
+      <div id="robot-voice-en-controls">
+        <label style="font-size:12px;color:var(--fg2)">Voice:</label>
+        <select id="robot-voice-select" style="width:100%"></select>
+        <div class="row" style="margin-top:4px">
+          <label style="font-size:12px;color:var(--fg2)">Speed:</label>
+          <input type="range" id="robot-voice-speed" min="0.5" max="2.0" step="0.1" value="1.0" style="flex:1">
+          <span id="robot-voice-speed-val" style="font-size:12px;width:35px">1.0</span>
+        </div>
+      </div>
+      <!-- German (Piper) voice controls -->
+      <div id="robot-voice-de-controls" style="display:none">
+        <label style="font-size:12px;color:var(--fg2)">Voice:</label>
+        <select id="robot-piper-voice" style="width:100%"></select>
+        <div id="robot-piper-emotion-row" style="margin-top:8px;display:none">
+          <label style="font-size:12px;color:var(--fg2)">Emotion:</label>
+          <select id="robot-piper-emotion" style="width:100%"></select>
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Speed (length_scale): <span id="robot-piper-speed-val">1.0</span></label>
+          <input type="range" id="robot-piper-speed" min="0.5" max="2.0" step="0.05" value="1.0" oninput="document.getElementById('robot-piper-speed-val').textContent=this.value">
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Expressiveness: <span id="robot-piper-noise-val">0.667</span></label>
+          <input type="range" id="robot-piper-noise" min="0" max="1" step="0.01" value="0.667" oninput="document.getElementById('robot-piper-noise-val').textContent=this.value">
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Duration variation: <span id="robot-piper-noisew-val">0.8</span></label>
+          <input type="range" id="robot-piper-noisew" min="0" max="1" step="0.01" value="0.8" oninput="document.getElementById('robot-piper-noisew-val').textContent=this.value">
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--fg2)">Sentence pause: <span id="robot-piper-silence-val">0.2</span>s</label>
+          <input type="range" id="robot-piper-silence" min="0" max="1" step="0.05" value="0.2" oninput="document.getElementById('robot-piper-silence-val').textContent=this.value">
+        </div>
       </div>
 
       <hr style="border-color:var(--border);margin:12px 0">
@@ -625,31 +660,62 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
 
   <!-- Robot LLM -->
   <div class="panel">
-    <div class="panel-head">Robot LLM <span style="font-size:11px;color:var(--fg2)">(overrides global LLM for robot)</span></div>
+    <div class="panel-head">Robot LLM</div>
     <div class="panel-body" style="max-height:none">
-      <div style="font-size:11px;color:var(--fg2);margin-bottom:8px">Leave empty to use global LLM settings. Only set values you want to override.</div>
-      <label style="font-size:12px;color:var(--fg2)">Model override:</label>
-      <input id="robot-llm-model" placeholder="(use global)" style="width:100%">
-      <div class="row" style="margin-top:6px">
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="robot-llm-multimodal"> Multimodal (images+video)
+      <label style="font-size:12px;color:var(--fg2)">Model:</label>
+      <input id="robot-llm-model" placeholder=".models/Qwen3.5-4B-4bit">
+      <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">Base URL <span style="font-size:11px">(empty = local MLX)</span>:</label>
+      <input id="robot-llm-base-url" placeholder="https://api.openai.com/v1">
+      <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">API Key <span style="font-size:11px">(empty = none)</span>:</label>
+      <input id="robot-llm-api-key" type="password" placeholder="sk-...">
+      <div id="robot-llm-api-key-hint" style="font-size:11px;color:var(--fg2);margin-top:2px"></div>
+
+      <div style="margin-top:12px">
+        <label style="font-size:12px;color:var(--fg2)">Temperature: <span id="robot-llm-temp-val">0.25</span></label>
+        <input type="range" id="robot-llm-temp" min="0" max="2" step="0.05" value="0.25" oninput="document.getElementById('robot-llm-temp-val').textContent=this.value">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="robot-llm-top-p-enabled" style="width:auto" checked onchange="document.getElementById('robot-llm-top-p').disabled=!this.checked">
+          Top P: <span id="robot-llm-topp-val">1.0</span>
         </label>
+        <input type="range" id="robot-llm-top-p" min="0" max="1" step="0.05" value="1.0" oninput="document.getElementById('robot-llm-topp-val').textContent=this.value">
       </div>
-      <div class="row" style="margin-top:6px">
-        <label style="font-size:12px;color:var(--fg2)">Max tokens:</label>
-        <input id="robot-llm-max-tokens" type="number" min="10" max="4096" placeholder="(global)" style="width:80px">
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="robot-llm-top-k-enabled" style="width:auto" checked onchange="document.getElementById('robot-llm-top-k').disabled=!this.checked">
+          Top K:
+        </label>
+        <input type="number" id="robot-llm-top-k" min="0" max="500" value="0" style="width:80px">
       </div>
-      <div class="row" style="margin-top:4px">
-        <label style="font-size:12px;color:var(--fg2)">Temperature:</label>
-        <input type="range" id="robot-llm-temp" min="0" max="2" step="0.05" value="0.25" style="flex:1">
-        <span id="robot-llm-temp-val" style="font-size:12px;width:35px">0.25</span>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Repeat Penalty: <span id="robot-llm-rp-val">1.0</span></label>
+        <input type="range" id="robot-llm-repeat-penalty" min="1" max="2" step="0.05" value="1.0" oninput="document.getElementById('robot-llm-rp-val').textContent=this.value">
       </div>
-      <label style="font-size:12px;color:var(--fg2);margin-top:6px;display:block">System prompt:</label>
-      <textarea id="robot-llm-system-prompt" rows="3" style="width:100%;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;resize:vertical" placeholder="(uses global system prompt)"></textarea>
-      <div class="row" style="margin-top:8px">
-        <button onclick="saveRobotLlmConfig()">Save Robot LLM</button>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Max Output Tokens:</label>
+        <input type="number" id="robot-llm-max-tokens" min="1" max="4096" value="80" style="width:80px">
       </div>
-      <div id="robot-llm-feedback" style="font-size:11px;margin-top:4px"></div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Context Window (tokens) <span style="font-size:11px">(0 = auto)</span>:</label>
+        <input type="number" id="robot-llm-context-tokens" min="0" max="131072" value="0" style="width:100px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Max History Turns:</label>
+        <input type="number" id="robot-llm-max-history-turns" min="1" max="100" value="8" style="width:80px">
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;color:var(--fg2)">Stop sequences <span style="font-size:11px">(comma-separated)</span>:</label>
+        <input id="robot-llm-stop" placeholder="\n\n, User:">
+      </div>
+
+      <label style="font-size:12px;color:var(--fg2);margin-top:12px;display:block">System prompt:</label>
+      <textarea id="robot-llm-system-prompt" rows="3" style="width:100%;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;resize:vertical" placeholder="You are a concise robot assistant..."></textarea>
+
+      <div class="row" style="margin-top:12px">
+        <button onclick="saveRobotLlmConfig()">Apply</button>
+        <span id="robot-llm-feedback" style="font-size:11px"></span>
+      </div>
     </div>
   </div>
 
@@ -832,6 +898,13 @@ function handleEvent(evt) {
     document.getElementById('robot-scene-desc').textContent = d.description || '';
   } else if (t === 'robot.event.state') {
     updateRobotState(d);
+  } else if (t && t.startsWith('robot.project.')) {
+    if (t === 'robot.project.started' && d.say) {
+      document.getElementById('robot-task-feedback').textContent = 'Robot: ' + d.say;
+    } else if (t === 'robot.project.speak' && d.text) {
+      document.getElementById('robot-task-feedback').textContent = 'Robot: ' + d.text;
+    }
+    pollProjectStatus();
   } else if (t && t.startsWith('robot.memory.')) {
     loadMemoryStats();
     if (t.includes('person')) loadMemPersons();
@@ -997,6 +1070,13 @@ async function loadStatus() {
       deRadio.disabled = !piperOk;
       deRadio.parentElement.style.opacity = piperOk ? '1' : '0.4';
       deRadio.parentElement.title = piperOk ? '' : 'Piper TTS not running';
+    }
+    // Same for robot German radio
+    const robotDeRadio = document.querySelector('input[name="robot-voice-lang"][value="de"]');
+    if (robotDeRadio) {
+      robotDeRadio.disabled = !piperOk;
+      robotDeRadio.parentElement.style.opacity = piperOk ? '1' : '0.4';
+      robotDeRadio.parentElement.title = piperOk ? '' : 'Piper TTS not running';
     }
     const llmOk = s.llm?.loaded || s.llm?.configured;
     document.getElementById('dot-llm').className = 'dot ' + (llmOk ? 'ok' : 'warn');
@@ -1471,15 +1551,95 @@ let audioCtx = null;
 let audioNextTime = 0;
 let robotCaps = new Set();
 
-function submitRobotTask() {
+function submitRobotProject() {
   const input = document.getElementById('robot-task-input');
   const text = input.value.trim();
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({type:'robot_command', command:{type:'task', params:{task:text}}}));
+  if (!text) return;
   const fb = document.getElementById('robot-task-feedback');
-  fb.textContent = 'Sent: ' + text;
-  input.value = '';
+  fb.textContent = 'Starting project...';
+  input.disabled = true;
+  fetch('/api/robot/project/start', {
+    method: 'POST',
+    headers: {...authHeaders(), 'Content-Type': 'application/json'},
+    body: JSON.stringify({text}),
+  }).then(r => r.json()).then(d => {
+    input.disabled = false;
+    if (d.ok) {
+      fb.textContent = 'Robot: ' + (d.say || 'Project started.');
+      input.value = '';
+      document.getElementById('btn-cancel-project').style.display = '';
+      pollProjectStatus();
+    } else {
+      fb.textContent = 'Error: ' + (d.error || 'Failed');
+    }
+  }).catch(e => { input.disabled = false; fb.textContent = 'Error: ' + e.message; });
 }
+function cancelRobotProject() {
+  fetch('/api/robot/project/cancel', {method:'POST', headers:authHeaders()})
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById('robot-task-feedback').textContent = d.message || 'Cancelled.';
+      document.getElementById('btn-cancel-project').style.display = 'none';
+      pollProjectStatus();
+    }).catch(() => {});
+}
+function updateProjectPlan(data) {
+  const panel = document.getElementById('robot-plan-panel');
+  const stepsEl = document.getElementById('robot-plan-steps');
+  const emptyEl = document.getElementById('robot-plan-empty');
+  const badge = document.getElementById('robot-plan-badge');
+  const descEl = document.getElementById('robot-plan-desc');
+  const cancelBtn = document.getElementById('btn-cancel-project');
+  if (!panel) return;
+
+  const plan = data.plan || [];
+  const progress = data.plan_progress;
+  const isActive = data.status === 'active';
+
+  if (cancelBtn) cancelBtn.style.display = isActive ? '' : 'none';
+
+  if (!plan.length || data.status === 'idle') {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+  emptyEl.style.display = 'none';
+  descEl.textContent = data.description || '';
+
+  if (progress) {
+    badge.textContent = progress.completed + '/' + progress.total;
+    const allDone = progress.completed + progress.skipped + progress.failed >= progress.total;
+    badge.style.background = allDone ? 'rgba(63,185,80,0.15)' : 'rgba(57,175,255,0.15)';
+    badge.style.color = allDone ? 'var(--green)' : 'var(--blue)';
+  }
+
+  const icons = {completed:'\u2713', active:'\u2192', failed:'\u2717', skipped:'\u2013', pending:'\u25CB'};
+  const colors = {completed:'var(--green)', active:'var(--blue)', failed:'var(--red)', skipped:'var(--fg2)', pending:'var(--fg2)'};
+
+  let html = '<div style="font-size:12px">';
+  plan.forEach(s => {
+    const icon = icons[s.status] || '?';
+    const color = colors[s.status] || 'var(--fg2)';
+    const weight = s.status === 'active' ? 'bold' : 'normal';
+    const extra = s.status === 'failed' && s.attempts ? ' (attempt ' + s.attempts + ')' : '';
+    const criteria = s.success_criteria ? '<span style="color:var(--fg2);font-size:11px"> — ' + s.success_criteria + '</span>' : '';
+    html += '<div style="padding:3px 0;color:' + color + ';font-weight:' + weight + '">'
+      + '<span style="display:inline-block;width:20px;text-align:center">' + icon + '</span> '
+      + 'Step ' + (s.index + 1) + ': ' + s.description + extra + criteria
+      + '</div>';
+  });
+  html += '</div>';
+  stepsEl.innerHTML = html;
+}
+
+function pollProjectStatus() {
+  fetch('/api/robot/project', {headers:authHeaders()})
+    .then(r => r.json())
+    .then(d => updateProjectPlan(d))
+    .catch(() => {});
+}
+
 function robotCmd(cmd, dir) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const speed = parseFloat(document.getElementById('robot-speed').value) || 0.3;
@@ -1500,12 +1660,75 @@ function robotCmd(cmd, dir) {
 }
 function updateRobotModel() {}
 
+let _robotVoiceLang = 'en';
+
+function _showRobotVoiceLang(lang) {
+  _robotVoiceLang = lang;
+  document.getElementById('robot-voice-en-controls').style.display = lang === 'en' ? '' : 'none';
+  document.getElementById('robot-voice-de-controls').style.display = lang === 'de' ? '' : 'none';
+  document.querySelector(`input[name="robot-voice-lang"][value="${lang}"]`).checked = true;
+}
+
+async function switchRobotVoiceLang(lang) {
+  const fb = document.getElementById('robot-config-feedback');
+  fb.style.color = 'var(--fg2)'; fb.textContent = 'Switching...';
+  try {
+    const r = await fetch('/api/config/robot', {
+      method: 'POST', headers: {...authHeaders(), 'Content-Type':'application/json'},
+      body: JSON.stringify({voice_lang: lang})
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      fb.style.color = 'var(--red)'; fb.textContent = j.error || 'Switch failed';
+      _showRobotVoiceLang(_robotVoiceLang); // revert
+      setTimeout(() => { fb.textContent = ''; }, 4000);
+      return;
+    }
+    _showRobotVoiceLang(lang);
+    fb.style.color = 'var(--green)'; fb.textContent = lang === 'de' ? 'German' : 'English';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
+  } catch(e) {
+    fb.style.color = 'var(--red)'; fb.textContent = 'Switch failed';
+    _showRobotVoiceLang(_robotVoiceLang); // revert
+  }
+}
+
+// Cache voice lists from robot config
+let _robotVoiceData = {};
+
+function _populateRobotVoices(data, currentVoice) {
+  _robotVoiceData = data;
+  // English voices
+  _populateVoiceSelect(document.getElementById('robot-voice-select'),
+    data.kokoro_voices || {}, currentVoice);
+  // German voices
+  _populateVoiceSelect(document.getElementById('robot-piper-voice'),
+    data.piper_voices || {}, currentVoice);
+  // Piper emotion handler
+  const piperVoiceSel = document.getElementById('robot-piper-voice');
+  const emotionRow = document.getElementById('robot-piper-emotion-row');
+  const emotionSel = document.getElementById('robot-piper-emotion');
+  function updateEmotionVisibility() {
+    const isEmotional = piperVoiceSel.value.includes('emotional');
+    emotionRow.style.display = isEmotional ? '' : 'none';
+    if (isEmotional && data.piper_emotions) {
+      emotionSel.innerHTML = '';
+      for (const [name, id] of Object.entries(data.piper_emotions)) {
+        const opt = document.createElement('option');
+        opt.value = id; opt.textContent = name;
+        emotionSel.appendChild(opt);
+      }
+    }
+  }
+  piperVoiceSel.onchange = updateEmotionVisibility;
+  updateEmotionVisibility();
+}
+
 function saveRobotConfig() {
+  const lang = _robotVoiceLang;
   const body = {
     transport: document.getElementById('robot-transport-select').value,
-    voice: document.getElementById('robot-voice-select').value,
-    voice_lang: document.getElementById('robot-voice-lang').value,
-    voice_speed: parseFloat(document.getElementById('robot-voice-speed').value),
+    voice_lang: lang,
     wake_word: document.getElementById('robot-wake-word').value,
     wake_word_timeout: parseInt(document.getElementById('robot-wake-timeout').value) || 30,
     safety_stop_on_disconnect: document.getElementById('robot-safety-stop').checked,
@@ -1515,6 +1738,13 @@ function saveRobotConfig() {
       max_reach_m: parseFloat(document.getElementById('robot-safety-reach').value),
     },
   };
+  if (lang === 'en') {
+    body.voice = document.getElementById('robot-voice-select').value;
+    body.voice_speed = parseFloat(document.getElementById('robot-voice-speed').value);
+  } else {
+    body.voice = document.getElementById('robot-piper-voice').value;
+    body.voice_speed = parseFloat(document.getElementById('robot-piper-speed').value);
+  }
   // G1-specific
   const ip = document.getElementById('robot-jetson-ip').value;
   const dds = parseInt(document.getElementById('robot-dds-domain').value) || 0;
@@ -1533,23 +1763,34 @@ function saveRobotConfig() {
 }
 
 function saveRobotLlmConfig() {
-  const llm = {};
-  const model = document.getElementById('robot-llm-model').value.trim();
-  if (model) llm.model = model;
-  const mm = document.getElementById('robot-llm-multimodal').checked;
-  llm.multimodal = mm;
-  const mt = document.getElementById('robot-llm-max-tokens').value;
-  if (mt) llm.max_tokens = parseInt(mt);
-  llm.temperature = parseFloat(document.getElementById('robot-llm-temp').value);
-  const sp = document.getElementById('robot-llm-system-prompt').value.trim();
-  if (sp) llm.system_prompt = sp;
+  const fb = document.getElementById('robot-llm-feedback');
+  const stopRaw = document.getElementById('robot-llm-stop').value.trim();
+  const stop = stopRaw ? stopRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const llm = {
+    model: document.getElementById('robot-llm-model').value.trim(),
+    base_url: document.getElementById('robot-llm-base-url').value.trim(),
+    temperature: parseFloat(document.getElementById('robot-llm-temp').value),
+    top_p: parseFloat(document.getElementById('robot-llm-top-p').value),
+    top_p_enabled: document.getElementById('robot-llm-top-p-enabled').checked,
+    top_k: parseInt(document.getElementById('robot-llm-top-k').value, 10),
+    top_k_enabled: document.getElementById('robot-llm-top-k-enabled').checked,
+    repeat_penalty: parseFloat(document.getElementById('robot-llm-repeat-penalty').value),
+    max_tokens: parseInt(document.getElementById('robot-llm-max-tokens').value, 10),
+    context_tokens: parseInt(document.getElementById('robot-llm-context-tokens').value, 10),
+    max_history_turns: parseInt(document.getElementById('robot-llm-max-history-turns').value, 10),
+    stop: stop,
+    system_prompt: document.getElementById('robot-llm-system-prompt').value.trim(),
+  };
+  const apiKey = document.getElementById('robot-llm-api-key').value;
+  if (apiKey) llm.api_key = apiKey;
   fetch('/api/config/robot', {method:'POST', headers:{...authHeaders(), 'Content-Type':'application/json'},
     body: JSON.stringify({llm})
   }).then(r => r.json()).then(d => {
-    const fb = document.getElementById('robot-llm-feedback');
-    fb.textContent = d.ok ? 'Saved.' : 'Error.';
     fb.style.color = d.ok ? 'var(--green)' : 'var(--red)';
-    setTimeout(() => { fb.textContent = ''; }, 3000);
+    fb.textContent = d.ok ? 'Applied' : 'Error';
+    document.getElementById('robot-llm-api-key').value = '';
+    if (d.llm) document.getElementById('robot-llm-api-key-hint').textContent = d.llm.has_api_key ? 'API key is set' : '';
+    setTimeout(() => { fb.textContent = ''; }, 2000);
   });
 }
 
@@ -1777,6 +2018,8 @@ function setRobotDisconnected() {
   document.getElementById('robot-camera-source').disabled = true;
   stopVideoStream();
   stopAudioMonitor();
+  const planPanel = document.getElementById('robot-plan-panel');
+  if (planPanel) planPanel.style.display = 'none';
 }
 
 function loadRobotConfig() {
@@ -1797,9 +2040,17 @@ function loadRobotConfig() {
     const chk = (id, val) => { const e = document.getElementById(id); if (e) e.checked = !!val; };
     const rng = (id, val, lblId) => { const e = document.getElementById(id); if (e) { e.value = val; } const l = document.getElementById(lblId); if (l) l.textContent = val; };
     sel('robot-transport-select', d.transport || 'websocket');
-    sel('robot-voice-select', d.voice || 'am_adam');
-    sel('robot-voice-lang', d.voice_lang || 'en');
-    rng('robot-voice-speed', d.voice_speed || 1.0, 'robot-voice-speed-val');
+    // Voice: populate both EN + DE selectors from voice data, show correct one
+    const vLang = d.voice_lang || 'en';
+    _populateRobotVoices(d, d.voice || 'am_adam');
+    _showRobotVoiceLang(vLang);
+    if (vLang === 'en') {
+      sel('robot-voice-select', d.voice || 'am_adam');
+      rng('robot-voice-speed', d.voice_speed || 1.0, 'robot-voice-speed-val');
+    } else {
+      sel('robot-piper-voice', d.voice || 'thorsten-high');
+      rng('robot-piper-speed', d.voice_speed || 1.0, 'robot-piper-speed-val');
+    }
     sel('robot-wake-word', d.wake_word || 'Robert');
     sel('robot-wake-timeout', d.wake_word_timeout || 30);
     chk('robot-safety-stop', d.safety_stop_on_disconnect);
@@ -1816,22 +2067,56 @@ function loadRobotConfig() {
     // Robot LLM
     if (d.llm) {
       sel('robot-llm-model', d.llm.model || '');
-      chk('robot-llm-multimodal', d.llm.multimodal);
-      sel('robot-llm-max-tokens', d.llm.max_tokens || '');
-      rng('robot-llm-temp', d.llm.temperature || 0.25, 'robot-llm-temp-val');
+      sel('robot-llm-base-url', d.llm.base_url || '');
+      document.getElementById('robot-llm-api-key').value = '';
+      document.getElementById('robot-llm-api-key-hint').textContent = d.llm.has_api_key ? 'API key is set' : '';
+      rng('robot-llm-temp', d.llm.temperature ?? 0.25, 'robot-llm-temp-val');
+      const tpE = document.getElementById('robot-llm-top-p-enabled');
+      tpE.checked = d.llm.top_p_enabled !== false;
+      const tpR = document.getElementById('robot-llm-top-p');
+      tpR.value = d.llm.top_p ?? 1.0; tpR.disabled = !tpE.checked;
+      document.getElementById('robot-llm-topp-val').textContent = d.llm.top_p ?? 1.0;
+      const tkE = document.getElementById('robot-llm-top-k-enabled');
+      tkE.checked = d.llm.top_k_enabled !== false;
+      const tkI = document.getElementById('robot-llm-top-k');
+      tkI.value = d.llm.top_k ?? 0; tkI.disabled = !tkE.checked;
+      const rpR = document.getElementById('robot-llm-repeat-penalty');
+      rpR.value = d.llm.repeat_penalty ?? 1.0;
+      document.getElementById('robot-llm-rp-val').textContent = d.llm.repeat_penalty ?? 1.0;
+      sel('robot-llm-max-tokens', d.llm.max_tokens ?? 80);
+      sel('robot-llm-context-tokens', d.llm.context_tokens ?? 0);
+      sel('robot-llm-max-history-turns', d.llm.max_history_turns ?? 8);
+      sel('robot-llm-stop', (d.llm.stop || []).join(', '));
       sel('robot-llm-system-prompt', d.llm.system_prompt || '');
     }
+    // Load project plan
+    pollProjectStatus();
   }).catch(() => {});
 }
 
 // Slider value display updates
 ['robot-speed', 'robot-voice-speed', 'robot-safety-max-speed', 'robot-safety-grasp',
- 'robot-safety-reach', 'robot-llm-temp'].forEach(id => {
+ 'robot-safety-reach', 'robot-llm-temp', 'robot-llm-top-p', 'robot-llm-repeat-penalty'].forEach(id => {
   document.getElementById(id)?.addEventListener('input', function() {
     const lbl = document.getElementById(id + '-val');
     if (lbl) lbl.textContent = this.value;
   });
 });
+
+// --- Time helpers ---
+function relativeTime(unixTs) {
+  if (!unixTs) return '--';
+  const delta = (Date.now() / 1000) - unixTs;
+  if (delta < 10) return 'just now';
+  if (delta < 60) return Math.floor(delta) + 's ago';
+  if (delta < 3600) return Math.floor(delta / 60) + ' min ago';
+  if (delta < 86400) return Math.floor(delta / 3600) + 'h ago';
+  const days = Math.floor(delta / 86400);
+  if (days === 1) return 'yesterday';
+  if (days < 30) return days + ' days ago';
+  const months = Math.floor(days / 30);
+  return months === 1 ? '1 month ago' : months + ' months ago';
+}
 
 // --- Spatial Memory ---
 let _memTab = 'persons';
@@ -1853,7 +2138,9 @@ async function loadMemoryStats() {
     const d = await r.json();
     if (!d.initialized) { document.getElementById('mem-stats-badge').textContent = 'off'; return; }
     const ent = (d.persons || 0) + (d.objects || 0) + (d.rooms || 0);
-    document.getElementById('mem-stats-badge').textContent = ent + ' entities | ' + (d.observations || 0) + ' obs';
+    let statsText = ent + ' entities | ' + (d.observations || 0) + ' obs';
+    if (d.oldest_ago) statsText += ' | ' + d.oldest_ago + ' → ' + d.newest_ago;
+    document.getElementById('mem-stats-badge').textContent = statsText;
     // Populate room filter
     const sel = document.getElementById('mem-query-room');
     const cur = sel.value;
@@ -2018,7 +2305,7 @@ async function queryMemory() {
     el.innerHTML = '<table class="config-table"><tr><th>Type</th><th>Name</th><th>Room</th><th>Description</th><th>Time</th><th>Score</th></tr>' +
       d.results.map(r => '<tr><td>' + (r.entity_type||'scene') + '</td><td>' + (r.entity_name||'--') + '</td><td>' + (r.room||'--') + '</td>' +
       '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">' + (r.description||r.document||'--') + '</td>' +
-      '<td>' + (r.timestamp ? new Date(r.timestamp*1000).toLocaleString() : '--') + '</td>' +
+      '<td title="' + (r.timestamp ? new Date(r.timestamp*1000).toLocaleString() : '') + '">' + (r.time_ago || relativeTime(r.timestamp)) + '</td>' +
       '<td>' + (r.similarity !== undefined ? r.similarity.toFixed(3) : '--') + '</td></tr>').join('') + '</table>';
   } catch(e) { console.error(e); document.getElementById('mem-query-results').innerHTML = '<div class="empty">Query failed.</div>'; }
 }

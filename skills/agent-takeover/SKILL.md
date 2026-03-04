@@ -635,4 +635,6 @@ During robot takeover, agents can enrich their responses with context from the s
 5. clawfinger_robot_release               → hand back to local LLM
 ```
 
-Memory queries are non-blocking REST calls and add negligible latency between `turn_wait` and `turn_reply`. See [robot-gateway/SKILL.md](../robot-gateway/SKILL.md) for the full spatial memory API reference.
+Memory queries are non-blocking REST calls and add negligible latency between `turn_wait` and `turn_reply`. All spatial memory results include temporal awareness — `time_ago` fields on every observation (e.g. "5 min ago", "yesterday"), and `clawfinger_memory_last_seen` for quick "when did I last see X?" lookups. The robot system prompt also includes current time context.
+
+See [robot-gateway/SKILL.md](../robot-gateway/SKILL.md) for the full spatial memory API reference.

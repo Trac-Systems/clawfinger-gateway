@@ -421,7 +421,19 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   "$GW/api/robot/memory/query" \
   -d '{"type": "text", "text": "where are my keys?"}' | jq .
 
-# Memory stats
+# Query with time filter (natural expressions)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/memory/query" \
+  -d '{"type": "text", "text": "people in kitchen", "time_filter": "last hour"}' | jq .
+
+# Last seen (most recent observation)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  "$GW/api/robot/memory/last_seen" \
+  -d '{"entity_name": "Markus"}' | jq .
+
+# Memory stats (includes temporal range)
 curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/memory/stats" | jq .
 ```
 

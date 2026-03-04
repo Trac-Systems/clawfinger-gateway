@@ -315,9 +315,10 @@ For full API documentation, endpoint details, and config options, see the [Phone
 | `clawfinger_memory_teach_person` | Teach person by name + optional reference photos |
 | `clawfinger_memory_teach_object` | Teach object by name + optional reference photos |
 | `clawfinger_memory_teach_room` | Define room/zone |
-| `clawfinger_memory_query` | Natural language query with filters (room, type, time) |
+| `clawfinger_memory_query` | Natural language query with filters (room, type, time). Supports `time_filter` param with natural expressions: `"last hour"`, `"today"`, `"yesterday"`, `"last 3 days"`. Results include `time_ago`. |
+| `clawfinger_memory_last_seen` | Find most recent observation of a person, object, or entity in a room. Returns `time_ago`. |
 | `clawfinger_memory_list` | List known entities by type |
-| `clawfinger_memory_stats` | DB statistics |
+| `clawfinger_memory_stats` | DB statistics with temporal range (oldest/newest observation) |
 
 ## Robot Skill & Project Tools
 

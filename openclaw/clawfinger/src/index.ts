@@ -494,7 +494,7 @@ export default function register(api: OpenClawPluginApi) {
     name: "clawfinger_robot_project_status",
     label: "Clawfinger Robot Project Status",
     description:
-      "Get current robot project execution state (active, idle, steps, description).",
+      "Get current robot project execution state including structured plan with step status (pending/active/completed/failed/skipped), dependencies, verification results, and progress summary.",
     parameters: Type.Object({}),
     async execute() {
       const project = await client.getRobotProjectStatus();
@@ -837,6 +837,7 @@ export default function register(api: OpenClawPluginApi) {
       person_id: Type.Optional(Type.String({ description: "Person ID (for person_sightings)" })),
       object_id: Type.Optional(Type.String({ description: "Object ID (for object_sightings)" })),
       room: Type.Optional(Type.String({ description: "Room name (for room_activity or filter)" })),
+      time_filter: Type.Optional(Type.String({ description: "Natural time filter: 'last hour', 'today', 'yesterday', 'last 3 days'" })),
       n_results: Type.Optional(Type.Number({ description: "Max results", default: 10 })),
     }),
     async execute(_id: string, params: any) {
@@ -845,18 +846,40 @@ export default function register(api: OpenClawPluginApi) {
       if (params.person_id) body.person_id = params.person_id;
       if (params.object_id) body.object_id = params.object_id;
       if (params.room) body.room = params.room;
+      if (params.time_filter) body.time_filter = params.time_filter;
       if (params.room && params.type !== "room_activity") {
         body.filters = { room: params.room };
       }
       const result = await client.memoryQuery(params.type, body);
       const lines = [`Found ${result.count} results:`];
       for (const r of (result.results || []).slice(0, 10)) {
-        lines.push(`  [${r.entity_type || "scene"}] ${r.entity_name || "--"} in ${r.room || "--"}: ${(r.description || r.document || "").slice(0, 80)}`);
+        const timeStr = r.time_ago ? ` (${r.time_ago})` : "";
+        lines.push(`  [${r.entity_type || "scene"}] ${r.entity_name || "--"} in ${r.room || "--"}: ${(r.description || r.document || "").slice(0, 80)}${timeStr}`);
       }
       return {
         content: [{ type: "text", text: lines.join("\n") }],
         details: result,
       };
+    },
+  });
+
+  api.registerTool({
+    name: "clawfinger_memory_last_seen",
+    label: "Clawfinger Memory Last Seen",
+    description: "Find the most recent observation of a person, object, or activity in a room.",
+    parameters: Type.Object({
+      entity_name: Type.Optional(Type.String({ description: "Name of person or object" })),
+      entity_type: Type.Optional(Type.String({ description: "Entity type: person, object" })),
+      room: Type.Optional(Type.String({ description: "Room name" })),
+    }),
+    async execute(_id: string, params: any) {
+      const result = await client.memoryLastSeen(params);
+      if (!result.found) {
+        return { content: [{ type: "text", text: "No matching observation found." }], details: result };
+      }
+      const r = result.result;
+      const text = `Last seen: ${r.entity_name || r.entity_type || "entity"} in ${r.room || "unknown"} — ${r.time_ago || "unknown time"}`;
+      return { content: [{ type: "text", text }], details: result };
     },
   });
 
@@ -1214,7 +1237,8 @@ export default function register(api: OpenClawPluginApi) {
             const memSub = (tokens[2] || "stats").toLowerCase();
             if (memSub === "stats") {
               const stats = await client.memoryStats();
-              return { text: `Spatial Memory:\n  Persons: ${stats.persons || 0}\n  Objects: ${stats.objects || 0}\n  Rooms: ${stats.rooms || 0}\n  Routines: ${stats.routines || 0}\n  Observations: ${stats.observations || 0}\n  CLIP: ${stats.clip_loaded ? "loaded" : "not loaded"}` };
+              const temporal = stats.oldest_ago ? `\n  Oldest: ${stats.oldest_ago}\n  Newest: ${stats.newest_ago}\n  Span: ${stats.time_span}` : "";
+              return { text: `Spatial Memory:\n  Persons: ${stats.persons || 0}\n  Objects: ${stats.objects || 0}\n  Rooms: ${stats.rooms || 0}\n  Routines: ${stats.routines || 0}\n  Observations: ${stats.observations || 0}\n  CLIP: ${stats.clip_loaded ? "loaded" : "not loaded"}${temporal}` };
             }
             if (memSub === "persons") {
               const persons = await client.memoryListPersons();
@@ -1236,10 +1260,21 @@ export default function register(api: OpenClawPluginApi) {
               if (!queryText) return { text: "Usage: /clawfinger robot memory query <text>" };
               const result = await client.memoryQuery("text", { text: queryText, n_results: 10 });
               if (!result.results?.length) return { text: "No results found." };
-              const lines = result.results.slice(0, 10).map((r: any) => `  [${r.entity_type || "scene"}] ${r.entity_name || "--"} in ${r.room || "--"}: ${(r.description || "").slice(0, 60)}`);
+              const lines = result.results.slice(0, 10).map((r: any) => {
+                const timeStr = r.time_ago ? ` (${r.time_ago})` : "";
+                return `  [${r.entity_type || "scene"}] ${r.entity_name || "--"} in ${r.room || "--"}: ${(r.description || "").slice(0, 60)}${timeStr}`;
+              });
               return { text: `Results (${result.count}):\n${lines.join("\n")}` };
             }
-            return { text: "Usage: /clawfinger robot memory stats|persons|objects|rooms|query <text>" };
+            if (memSub === "last_seen") {
+              const name = tokens.slice(3).join(" ");
+              if (!name) return { text: "Usage: /clawfinger robot memory last_seen <name>" };
+              const result = await client.memoryLastSeen({ entity_name: name });
+              if (!result.found) return { text: `No observations found for "${name}".` };
+              const r = result.result;
+              return { text: `Last seen: ${r.entity_name || r.entity_type || "entity"} in ${r.room || "unknown"} — ${r.time_ago || "unknown time"}` };
+            }
+            return { text: "Usage: /clawfinger robot memory stats|persons|objects|rooms|query|last_seen <text>" };
           }
           return { text: "Usage: /clawfinger robot status|command|skills|skill|project|takeover|release|perception|snapshot|describe|stream|audio|memory" };
         }

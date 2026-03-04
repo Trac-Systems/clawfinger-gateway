@@ -11,6 +11,7 @@ from typing import Any
 
 import config
 import llm_backend
+import time_utils
 from endpoints.robot import skill_loader
 from endpoints.robot import dispatch_command as _dispatch_command
 from event_bus import bus
@@ -181,12 +182,15 @@ def _build_system_prompt() -> str:
             fast_lines.append(f"- {s['name']}: {s['description']} (fast-path, {status})")
 
     project_desc = "idle"
+    plan_section = ""
     if _PROJECT and _PROJECT.get("status") == "active":
         project_desc = _PROJECT.get("description", "active project")
+        plan_section = _build_plan_status()
 
-    return f"""You are {wake_word}, a voice-controlled robot assistant (Unitree G1 humanoid).
-You can move, see, manipulate objects, speak, and gesture.
-The user speaks to you directly. You respond via your speaker.
+    return f"""You are {wake_word}, a Unitree G1 humanoid robot.
+You execute physical tasks. Respond with short, direct statements.
+No emojis, no markdown formatting, no tables. Plain spoken language only.
+The user speaks to you. You respond via speaker — keep it brief.
 
 ## Output Format
 Always respond with a JSON object:
@@ -196,8 +200,8 @@ Always respond with a JSON object:
 - look: Camera scene description
 - detect_object {{class}}: Find object, returns 3D position + image crop
 - snapshot: Raw camera frame
-- walk {{direction, speed}}: Walk (forward/backward/left/right)
-- turn {{angle_deg}}: Rotate in place
+- walk {{direction, speed, duration_s}}: Walk (forward/backward/left/right) for duration_s seconds (default 3)
+- turn {{angle_deg, duration_s}}: Rotate in place for duration_s seconds (default 2)
 - stand / sit / stop: Posture
 - reach {{hand, x, y, z}}: Move hand to 3D position
 - grasp {{hand, force}}: Close gripper
@@ -211,13 +215,18 @@ Use {{"action": "load_skill", "params": {{"package": "<name>", "topic": "<topic>
 {('## Fast-Path Skills (coming soon)' + chr(10) + chr(10).join(fast_lines)) if fast_lines else ""}
 
 ## Multi-Step Projects
-For complex tasks, first output a plan using:
-{{"say": "Let me plan this out...", "do": {{"action": "plan_project", "params": {{"steps": ["step 1 description", "step 2 description", ...]}}}}, "continue": true}}
+For complex tasks (3+ steps), create a structured plan:
+{{"say": "Let me plan this...", "do": {{"action": "plan_project", "params": {{"steps": [
+  {{"description": "Find the glass", "success_criteria": "Glass detected in 3D space"}},
+  {{"description": "Pick up the glass", "success_criteria": "Glass grasped securely", "depends_on": [0]}},
+  {{"description": "Bring to user", "depends_on": [1]}}
+]}}}}, "continue": true}}
 
-Then execute each step sequentially, announcing progress:
-{{"say": "Step 1 of 3: finding the glass", "do": {{"action": "detect_object", "params": {{"class": "glass"}}}}, "continue": true}}
+After completing actions for a step, mark it done:
+{{"say": "Glass found.", "do": {{"action": "step_complete", "params": {{"step": 0}}}}, "continue": true}}
 
-After each step, verify the result before proceeding. Use detect_object to visually confirm.
+If a step fails:
+{{"say": "Can't find the glass.", "do": {{"action": "step_failed", "params": {{"step": 0, "reason": "Not visible"}}}}, "continue": true}}
 
 ## Rules
 1. For tasks you have knowledge about, load the relevant knowledge first.
@@ -227,10 +236,177 @@ After each step, verify the result before proceeding. Use detect_object to visua
 5. If the user says "stop", cancel the current task immediately.
 6. Output done/abort when a project is finished or impossible.
 7. For complex tasks with 3+ steps, always create a plan first.
-8. Announce each step progress: "Step N of M: doing X"
+8. Use step_complete / step_failed to track progress after each plan step.
+9. Do not skip steps that have unmet dependencies.
+10. Never use emojis, markdown formatting, or tables in speech output.
+11. Report what you see and do as plain facts.
 
 ## Current State
-Current project: {project_desc}"""
+{time_utils.time_context_line()}
+{_project_elapsed_line()}Current project: {project_desc}
+{plan_section}"""
+
+
+# ---------------------------------------------------------------------------
+# Plan step helpers
+# ---------------------------------------------------------------------------
+
+def _project_elapsed_line() -> str:
+    """Return project elapsed line if a project is active, else empty."""
+    if _PROJECT and _PROJECT.get("status") == "active" and _PROJECT.get("started_at"):
+        elapsed = time.time() - _PROJECT["started_at"]
+        return f"Project elapsed: {time_utils.duration(elapsed)}\n"
+    return ""
+
+
+_STEP_STATUS_ICONS = {
+    "completed": "✓",
+    "active": "→",
+    "failed": "✗",
+    "skipped": "–",
+    "pending": "○",
+}
+
+
+def _normalize_plan_steps(raw_steps: list) -> list[dict]:
+    """Convert plan steps to structured format.
+
+    Accepts both flat strings and structured dicts.
+    """
+    steps = []
+    for i, s in enumerate(raw_steps):
+        if isinstance(s, str):
+            step = {
+                "index": i,
+                "description": s,
+                "status": "pending",
+                "success_criteria": "",
+                "depends_on": [],
+                "attempts": 0,
+                "max_attempts": 3,
+                "started_at": None,
+                "completed_at": None,
+                "result": None,
+                "verification": None,
+            }
+        elif isinstance(s, dict):
+            step = {
+                "index": i,
+                "description": s.get("description", f"Step {i + 1}"),
+                "status": "pending",
+                "success_criteria": s.get("success_criteria", ""),
+                "depends_on": s.get("depends_on", []),
+                "attempts": 0,
+                "max_attempts": s.get("max_attempts", 3),
+                "started_at": None,
+                "completed_at": None,
+                "result": None,
+                "verification": None,
+            }
+        else:
+            continue
+        steps.append(step)
+    return steps
+
+
+def _build_plan_status() -> str:
+    """Build plan progress text for system prompt injection."""
+    if not _PROJECT or not _PROJECT.get("plan"):
+        return ""
+
+    lines = ["## Plan Progress"]
+    plan = _PROJECT["plan"]
+    total = len(plan)
+    for s in plan:
+        idx = s["index"] + 1
+        icon = _STEP_STATUS_ICONS.get(s["status"], "?")
+        extra = ""
+        if s["status"] == "failed":
+            extra = f" (failed: {s.get('result', {}).get('reason', 'unknown')}, attempt {s['attempts']}/{s['max_attempts']})"
+        elif s["status"] == "completed" and s.get("verification"):
+            v = s["verification"]
+            extra = f" (verified: {v.get('verdict', '?')})"
+        # Add step duration
+        dur = ""
+        if s["status"] == "completed" and s.get("started_at") and s.get("completed_at"):
+            dur = f" [{time_utils.duration(s['completed_at'] - s['started_at'])}]"
+        elif s["status"] == "active" and s.get("started_at"):
+            dur = f" [running {time_utils.duration(time.time() - s['started_at'])}]"
+        lines.append(f"Step {idx}/{total}: {icon} {s['description']}{dur}{extra}")
+
+    active = [s for s in plan if s["status"] == "active"]
+    if active:
+        lines.append(f"\nCurrent step: {active[0]['index'] + 1} — {active[0]['description']}")
+
+    completed = sum(1 for s in plan if s["status"] == "completed")
+    lines.append(f"Progress: {completed}/{total} steps completed")
+    return "\n".join(lines)
+
+
+def _deps_met(step: dict, plan: list[dict]) -> bool:
+    """Check if all dependencies for a step are completed."""
+    for dep_idx in step.get("depends_on", []):
+        if dep_idx < len(plan) and plan[dep_idx]["status"] != "completed":
+            return False
+    return True
+
+
+def _next_pending_step(plan: list[dict]) -> dict | None:
+    """Find the next pending step whose dependencies are met."""
+    for s in plan:
+        if s["status"] == "pending" and _deps_met(s, plan):
+            return s
+    return None
+
+
+async def _verify_step(step: dict) -> dict:
+    """Run visual verification for a completed step.
+
+    Takes a snapshot and asks VLM if the success criteria are met.
+    Returns {"verdict": "yes"|"no"|"unsure"|"skipped", ...}
+    """
+    criteria = step.get("success_criteria", "")
+    if not criteria:
+        return {"verdict": "skipped", "reason": "No success criteria defined"}
+
+    # Take snapshot via robot command
+    snapshot_result = await _dispatch_command(
+        config.get("robot.model", "unitree_g1"),
+        {"type": "snapshot", "params": {}},
+    )
+
+    image_b64 = ""
+    if isinstance(snapshot_result, dict):
+        image_b64 = snapshot_result.get("image_b64", snapshot_result.get("frame_b64", ""))
+
+    if not image_b64:
+        return {"verdict": "skipped", "reason": "No snapshot available"}
+
+    # Ask VLM
+    messages = [
+        {"role": "system", "content": "You verify whether a robot completed a task step. "
+         "Answer ONLY: YES, NO, or UNSURE."},
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            {"type": "text", "text": f"Task step: \"{step['description']}\"\n"
+             f"Success criteria: \"{criteria}\"\n"
+             f"Based on what you see, was this step completed successfully?"},
+        ]},
+    ]
+
+    try:
+        reply, _, _ = await asyncio.to_thread(
+            llm_backend.generate, messages, True, config.robot_llm())
+        reply_lower = reply.strip().lower()
+        if "yes" in reply_lower:
+            verdict = "yes"
+        elif "no" in reply_lower:
+            verdict = "no"
+        else:
+            verdict = "unsure"
+        return {"verdict": verdict, "vlm_reply": reply.strip()}
+    except Exception as exc:
+        return {"verdict": "skipped", "reason": f"VLM error: {exc}"}
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +520,13 @@ async def handle_voice_turn(transcript: str) -> dict:
     text, _, _ = llm_backend.generate(messages, raw=True, llm_override=config.robot_llm())
     parsed = _parse_robot_response(text)
     messages.append({"role": "assistant", "content": text})
+    print(f"[robot] LLM initial: {text[:500]}", flush=True)
+    print(f"[robot] Parsed: continue={parsed.get('continue')}, do={parsed.get('do')}", flush=True)
 
     # If continue=true, start a background project
     if parsed.get("continue", False):
+        do = parsed.get("do")
+
         _PROJECT = {
             "project_id": str(uuid.uuid4()),
             "started_at": time.time(),
@@ -362,8 +542,14 @@ async def handle_voice_turn(transcript: str) -> dict:
             "plan_step": 0,
         }
 
+        # Publish immediately so UI shows response before action executes
+        await bus.publish("robot.project.started", {
+            "project_id": _PROJECT["project_id"],
+            "description": transcript,
+            "say": parsed.get("say"),
+        }, endpoint="robot")
+
         # Execute initial action if present
-        do = parsed.get("do")
         if do:
             result = await _execute_action(do)
             if result is not None:
@@ -374,11 +560,6 @@ async def handle_voice_turn(transcript: str) -> dict:
                     "action": do,
                     "result": result,
                 })
-
-        await bus.publish("robot.project.started", {
-            "project_id": _PROJECT["project_id"],
-            "description": transcript,
-        }, endpoint="robot")
 
         # Start autonomous loop
         _TASK = asyncio.create_task(_run_autonomous())
@@ -406,18 +587,44 @@ async def _execute_action(do: dict) -> dict | None:
         return {"ok": bool(content), "loaded": f"{pkg}/{topic}"}
 
     if action == "plan_project":
-        # Store the step plan in the active project
-        steps = params.get("steps", [])
-        if _PROJECT and steps:
-            _PROJECT["plan"] = steps
+        raw_steps = params.get("steps", [])
+        if _PROJECT and raw_steps:
+            structured = _normalize_plan_steps(raw_steps)
+            _PROJECT["plan"] = structured
             _PROJECT["plan_step"] = 0
-            _PROJECT["max_steps"] = max(_PROJECT["max_steps"], len(steps) * 4)
+            _PROJECT["max_steps"] = max(_PROJECT["max_steps"], len(structured) * 4)
+            # Activate the first step whose deps are met
+            first = _next_pending_step(structured)
+            if first:
+                first["status"] = "active"
+                first["started_at"] = time.time()
+            step_descs = [s["description"] for s in structured]
             await bus.publish("robot.project.planned", {
                 "project_id": _PROJECT["project_id"],
-                "steps": steps,
-                "step_count": len(steps),
+                "steps": step_descs,
+                "step_count": len(structured),
             }, endpoint="robot")
-        return {"ok": True, "step_count": len(steps), "steps": steps}
+            # Announce first step via voice
+            if first and _SPEAK_CB:
+                msg = f"Step 1 of {len(structured)}: {first['description']}"
+                try:
+                    await _SPEAK_CB(msg)
+                except Exception:
+                    pass
+        return {"ok": True, "step_count": len(raw_steps),
+                "steps": [s["description"] for s in _PROJECT.get("plan", [])]}
+
+    if action == "step_complete":
+        return await _handle_step_complete(params)
+
+    if action == "step_failed":
+        return await _handle_step_failed(params)
+
+    if action == "step_retry":
+        return await _handle_step_retry(params)
+
+    if action == "step_skip":
+        return await _handle_step_skip(params)
 
     if action in ("done", "abort"):
         return None  # handled by caller
@@ -448,7 +655,246 @@ async def _execute_action(do: dict) -> dict | None:
     if safety_err:
         return safety_err
 
-    return await _dispatch_command(config.get("robot.model", "unitree_g1"), command)
+    result = await _dispatch_command(config.get("robot.model", "unitree_g1"), command)
+
+    # Timed movement: walk/turn are fire-and-forget velocity commands.
+    # Wait for the specified duration then stop, so the LLM gets a result
+    # only after the movement is complete.
+    if action in ("walk", "turn") and result.get("ok"):
+        duration = float(params.get("duration_s", 3 if action == "walk" else 2))
+        duration = min(duration, 30)  # safety cap
+        await asyncio.sleep(duration)
+        await _dispatch_command(
+            config.get("robot.model", "unitree_g1"),
+            {"type": "stop", "params": {}},
+        )
+        result["duration_s"] = duration
+        result["detail"] = result.get("detail", "") + f" (ran {duration:.1f}s, stopped)"
+
+    return result
+
+
+async def _handle_step_complete(params: dict) -> dict:
+    """Mark a plan step as completed, run visual verification, advance to next."""
+    if not _PROJECT or not _PROJECT.get("plan"):
+        return {"ok": False, "error": "No active plan"}
+
+    step_idx = params.get("step", -1)
+    plan = _PROJECT["plan"]
+    if step_idx < 0 or step_idx >= len(plan):
+        return {"ok": False, "error": f"Invalid step index {step_idx}"}
+
+    step = plan[step_idx]
+    if step["status"] not in ("active", "pending"):
+        return {"ok": False, "error": f"Step {step_idx} is {step['status']}, cannot complete"}
+
+    # Run visual verification if success criteria exist
+    verification = await _verify_step(step)
+    step["verification"] = verification
+
+    if verification["verdict"] == "no":
+        # VLM says step NOT done — inform LLM
+        step["attempts"] += 1
+        return {
+            "ok": False,
+            "verified": False,
+            "verdict": "no",
+            "message": f"Visual check failed: {verification.get('vlm_reply', 'Step does not appear completed')}",
+            "attempts": step["attempts"],
+            "max_attempts": step["max_attempts"],
+        }
+
+    # Mark completed
+    step["status"] = "completed"
+    step["completed_at"] = time.time()
+    _PROJECT["plan_step"] = step_idx + 1
+
+    completed = sum(1 for s in plan if s["status"] == "completed")
+    total = len(plan)
+
+    await bus.publish("robot.project.step_complete", {
+        "project_id": _PROJECT["project_id"],
+        "step_index": step_idx,
+        "description": step["description"],
+        "verification": verification["verdict"],
+        "progress": f"{completed}/{total}",
+    }, endpoint="robot")
+
+    # Activate next pending step
+    nxt = _next_pending_step(plan)
+    if nxt:
+        nxt["status"] = "active"
+        nxt["started_at"] = time.time()
+        # Voice announcement
+        if _SPEAK_CB:
+            msg = f"Step {nxt['index'] + 1} of {total}: {nxt['description']}"
+            try:
+                await _SPEAK_CB(msg)
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "verified": verification["verdict"] != "no",
+            "progress": f"{completed}/{total}",
+            "next_step": {"index": nxt["index"], "description": nxt["description"]},
+        }
+
+    # All steps done
+    if completed == total:
+        return {
+            "ok": True,
+            "verified": verification["verdict"] != "no",
+            "progress": f"{completed}/{total}",
+            "all_complete": True,
+            "message": "All plan steps completed. Use done action to finish.",
+        }
+
+    return {
+        "ok": True,
+        "verified": verification["verdict"] != "no",
+        "progress": f"{completed}/{total}",
+        "message": "Step completed. Some steps have unmet dependencies.",
+    }
+
+
+async def _handle_step_failed(params: dict) -> dict:
+    """Mark a plan step as failed."""
+    if not _PROJECT or not _PROJECT.get("plan"):
+        return {"ok": False, "error": "No active plan"}
+
+    step_idx = params.get("step", -1)
+    plan = _PROJECT["plan"]
+    if step_idx < 0 or step_idx >= len(plan):
+        return {"ok": False, "error": f"Invalid step index {step_idx}"}
+
+    step = plan[step_idx]
+    reason = params.get("reason", "Unknown failure")
+    step["attempts"] += 1
+    step["result"] = {"reason": reason}
+
+    if step["attempts"] >= step["max_attempts"]:
+        step["status"] = "failed"
+        await bus.publish("robot.project.step_failed", {
+            "project_id": _PROJECT["project_id"],
+            "step_index": step_idx,
+            "description": step["description"],
+            "reason": reason,
+            "attempts": step["attempts"],
+        }, endpoint="robot")
+        return {
+            "ok": True,
+            "status": "failed",
+            "message": f"Step {step_idx} failed after {step['attempts']} attempts: {reason}. "
+                       f"Use step_skip to skip or abort the project.",
+            "attempts": step["attempts"],
+            "max_attempts": step["max_attempts"],
+        }
+
+    # Can retry
+    return {
+        "ok": True,
+        "status": "can_retry",
+        "message": f"Step {step_idx} attempt {step['attempts']}/{step['max_attempts']} failed: {reason}. "
+                   f"Try a different approach or use step_skip.",
+        "attempts": step["attempts"],
+        "max_attempts": step["max_attempts"],
+    }
+
+
+async def _handle_step_retry(params: dict) -> dict:
+    """Retry a failed step."""
+    if not _PROJECT or not _PROJECT.get("plan"):
+        return {"ok": False, "error": "No active plan"}
+
+    step_idx = params.get("step", -1)
+    plan = _PROJECT["plan"]
+    if step_idx < 0 or step_idx >= len(plan):
+        return {"ok": False, "error": f"Invalid step index {step_idx}"}
+
+    step = plan[step_idx]
+    if step["status"] not in ("failed",) and step["attempts"] == 0:
+        return {"ok": False, "error": f"Step {step_idx} has not failed, no retry needed"}
+
+    step["status"] = "active"
+    step["started_at"] = time.time()
+    step["verification"] = None
+
+    if _SPEAK_CB:
+        msg = f"Retrying step {step_idx + 1}: {step['description']}"
+        try:
+            await _SPEAK_CB(msg)
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "message": f"Retrying step {step_idx}: {step['description']}",
+        "attempt": step["attempts"] + 1,
+        "max_attempts": step["max_attempts"],
+    }
+
+
+async def _handle_step_skip(params: dict) -> dict:
+    """Skip a step (mark as skipped)."""
+    if not _PROJECT or not _PROJECT.get("plan"):
+        return {"ok": False, "error": "No active plan"}
+
+    step_idx = params.get("step", -1)
+    plan = _PROJECT["plan"]
+    if step_idx < 0 or step_idx >= len(plan):
+        return {"ok": False, "error": f"Invalid step index {step_idx}"}
+
+    step = plan[step_idx]
+    reason = params.get("reason", "Skipped by user/LLM")
+    step["status"] = "skipped"
+    step["result"] = {"reason": reason}
+    step["completed_at"] = time.time()
+
+    # Cascade skip to all transitively dependent steps
+    skipped_deps = []
+    skipped_set = {step_idx}
+    changed = True
+    while changed:
+        changed = False
+        for s in plan:
+            if s["status"] == "pending" and s["index"] not in skipped_set:
+                if any(d in skipped_set for d in s.get("depends_on", [])):
+                    s["status"] = "skipped"
+                    s["result"] = {"reason": f"Dependency step {step_idx} was skipped"}
+                    s["completed_at"] = time.time()
+                    skipped_deps.append(s["index"])
+                    skipped_set.add(s["index"])
+                    changed = True
+
+    await bus.publish("robot.project.step_skipped", {
+        "project_id": _PROJECT["project_id"],
+        "step_index": step_idx,
+        "description": step["description"],
+        "reason": reason,
+        "cascade_skipped": skipped_deps,
+    }, endpoint="robot")
+
+    # Activate next pending step
+    nxt = _next_pending_step(plan)
+    if nxt:
+        nxt["status"] = "active"
+        nxt["started_at"] = time.time()
+        total = len(plan)
+        if _SPEAK_CB:
+            msg = f"Skipping ahead. Step {nxt['index'] + 1} of {total}: {nxt['description']}"
+            try:
+                await _SPEAK_CB(msg)
+            except Exception:
+                pass
+
+    completed = sum(1 for s in plan if s["status"] in ("completed", "skipped"))
+    return {
+        "ok": True,
+        "skipped": step_idx,
+        "cascade_skipped": skipped_deps,
+        "progress": f"{completed}/{len(plan)}",
+        "next_step": {"index": nxt["index"], "description": nxt["description"]} if nxt else None,
+    }
 
 
 async def _detect_and_confirm(params: dict) -> dict:
@@ -585,10 +1031,19 @@ async def _run_autonomous() -> None:
                 await _finish_project("abort", {"reason": "Project timed out"})
                 return
 
+            # Refresh system prompt (updates time context / step durations)
+            fresh_prompt = _build_system_prompt()
+            for msg in _PROJECT["messages"]:
+                if msg["role"] == "system":
+                    msg["content"] = fresh_prompt
+                    break
+
             # Call LLM
             text, _, _ = llm_backend.generate(_PROJECT["messages"], raw=True, llm_override=config.robot_llm())
             parsed = _parse_robot_response(text)
             _PROJECT["messages"].append({"role": "assistant", "content": text})
+            print(f"[robot] Auto step {_PROJECT['step']+1}: {text[:300]}", flush=True)
+            print(f"[robot] Parsed: continue={parsed.get('continue')}, do={parsed.get('do')}", flush=True)
 
             # Trim context to prevent overflow (keep system + last ~20 messages)
             if len(_PROJECT["messages"]) > 24:
@@ -655,8 +1110,11 @@ async def _run_autonomous() -> None:
                         "result": result,
                     })
 
-            # If continue is false, pause and wait for user
+            # If continue is false and no action pending, project is done
             if not parsed.get("continue", True):
+                if not do or do.get("action") in (None, "done"):
+                    await _finish_project("done", {"success": True, "reason": "Task completed"})
+                    return
                 _PAUSE_EVENT.clear()
                 continue
 
@@ -680,6 +1138,12 @@ async def _finish_project(action: str, params: dict) -> None:
 
     if not _PROJECT:
         return
+
+    # Safety: stop all robot movement when project ends
+    try:
+        await _dispatch_command(config.get("robot.model", "unitree_g1"), {"type": "stop", "params": {}})
+    except Exception:
+        pass
 
     project_id = _PROJECT["project_id"]
     success = action == "done" and params.get("success", False)
@@ -709,6 +1173,12 @@ async def cancel_project() -> dict:
     if not _PROJECT:
         return {"ok": True, "message": "No project running."}
 
+    # Safety: stop all robot movement
+    try:
+        await _dispatch_command(config.get("robot.model", "unitree_g1"), {"type": "stop", "params": {}})
+    except Exception:
+        pass
+
     project_id = _PROJECT["project_id"]
     _PROJECT["status"] = "cancelled"
 
@@ -731,6 +1201,25 @@ def current_project() -> dict | None:
     """Snapshot of current project state (without messages)."""
     if not _PROJECT:
         return None
+
+    plan = _PROJECT.get("plan", [])
+    # Return structured plan info for API consumers
+    plan_summary = []
+    for s in plan:
+        plan_summary.append({
+            "index": s["index"],
+            "description": s["description"],
+            "status": s["status"],
+            "success_criteria": s.get("success_criteria", ""),
+            "depends_on": s.get("depends_on", []),
+            "attempts": s.get("attempts", 0),
+            "verification": s.get("verification"),
+        })
+
+    completed = sum(1 for s in plan if s["status"] == "completed")
+    failed = sum(1 for s in plan if s["status"] == "failed")
+    skipped = sum(1 for s in plan if s["status"] == "skipped")
+
     return {
         "project_id": _PROJECT["project_id"],
         "started_at": _PROJECT["started_at"],
@@ -740,8 +1229,15 @@ def current_project() -> dict | None:
         "max_steps": _PROJECT["max_steps"],
         "loaded_knowledge": _PROJECT["loaded_knowledge"],
         "history_count": len(_PROJECT["history"]),
-        "plan": _PROJECT.get("plan", []),
+        "plan": plan_summary,
         "plan_step": _PROJECT.get("plan_step", 0),
+        "plan_progress": {
+            "total": len(plan),
+            "completed": completed,
+            "failed": failed,
+            "skipped": skipped,
+            "pending": len(plan) - completed - failed - skipped,
+        } if plan else None,
     }
 
 

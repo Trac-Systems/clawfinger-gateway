@@ -962,6 +962,21 @@ adb shell "run-as com.tracsystems.phonebridge cat files/profiles/profile.json" |
 import sys, json; g=json.load(sys.stdin)['gateway']; print(g); assert g['base_url']=='http://127.0.0.1:8996'; assert g['bearer']"
 ```
 
+## Time Awareness
+
+Every phone system prompt automatically includes current time and call duration:
+
+```
+[Current time: Tuesday, 2026-03-04 14:32 CET (afternoon)
+Call duration so far: 2m 15s]
+```
+
+This is injected by `instruction_store.build_system_prompt()` — a single chokepoint that covers all phone sessions. The LLM always knows what time it is and how long the call has been running.
+
+Format provided by `time_utils.time_context_line()`. Timezone configurable via `timezone` setting (default: `"Europe/Berlin"`).
+
+---
+
 ## Troubleshooting
 
 ### TTS returns 500

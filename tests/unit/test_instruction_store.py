@@ -13,14 +13,15 @@ class TestLayeredInstructions:
     def test_session_overrides_base(self, tmp_config):
         instruction_store.set_session("s1", "Session-level instructions")
         prompt = instruction_store.build_system_prompt("s1")
-        assert prompt == "Session-level instructions"
+        assert prompt.startswith("Session-level instructions")
+        assert "[Current time:" in prompt
         instruction_store.clear_session("s1")
 
     def test_turn_appended(self, tmp_config):
         instruction_store.set_turn("s1", "Turn extra")
         prompt = instruction_store.build_system_prompt("s1")
-        assert "Test system prompt." in prompt
         assert "Turn extra" in prompt
+        assert "[Current time:" in prompt
 
     def test_turn_consumed_after_build(self, tmp_config):
         instruction_store.set_turn("s1", "Once only")

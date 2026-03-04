@@ -250,6 +250,10 @@ export class GatewayClient {
     return this.get("/api/robot/memory/stats");
   }
 
+  async memoryLastSeen(params: { entity_name?: string; entity_type?: string; room?: string }): Promise<any> {
+    return this.post("/api/robot/memory/last_seen", params);
+  }
+
   async memoryIngestObservation(embedding?: number[], metadata?: Record<string, unknown>): Promise<any> {
     return this.post("/api/robot/memory/observations", { embedding, metadata: metadata || {} });
   }
