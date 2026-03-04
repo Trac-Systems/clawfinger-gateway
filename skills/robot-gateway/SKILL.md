@@ -779,29 +779,26 @@ REST endpoints for accessing robot cameras and microphones. Camera sources and m
 
 The gateway includes a persistent spatial memory subsystem for the robot. It stores what the robot has seen, where objects and persons were last observed, and the layout of known rooms/zones.
 
-### REST Endpoints (19 total)
+### REST Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/robot/memory/stats` | DB statistics: entity counts, observation counts, DB size |
+| `GET` | `/api/robot/memory/stats` | DB statistics: entity counts, observation counts, DB size, temporal range |
 | `GET` | `/api/robot/memory/persons` | List all known persons |
 | `POST` | `/api/robot/memory/persons` | Teach a person (name, description, optional photos) |
 | `GET` | `/api/robot/memory/persons/{id}` | Get person record by ID |
-| `PUT` | `/api/robot/memory/persons/{id}` | Update person record |
 | `DELETE` | `/api/robot/memory/persons/{id}` | Delete person record |
 | `GET` | `/api/robot/memory/objects` | List all known objects |
 | `POST` | `/api/robot/memory/objects` | Teach an object (name, description, optional photos) |
 | `GET` | `/api/robot/memory/objects/{id}` | Get object record by ID |
-| `PUT` | `/api/robot/memory/objects/{id}` | Update object record |
 | `DELETE` | `/api/robot/memory/objects/{id}` | Delete object record |
 | `GET` | `/api/robot/memory/rooms` | List all known rooms/zones |
 | `POST` | `/api/robot/memory/rooms` | Define a room/zone (name, description) |
 | `GET` | `/api/robot/memory/rooms/{id}` | Get room record by ID |
-| `PUT` | `/api/robot/memory/rooms/{id}` | Update room record |
 | `DELETE` | `/api/robot/memory/rooms/{id}` | Delete room record |
 | `POST` | `/api/robot/memory/observations` | Record a new observation (entity seen at location/time) |
-| `GET` | `/api/robot/memory/observations` | List observations with optional filters (entity_id, room, type, since) |
 | `POST` | `/api/robot/memory/query` | Natural language query with filters (room, type, time range) |
+| `POST` | `/api/robot/memory/last_seen` | Most recent observation matching entity_name/type/room |
 
 ### Query Types
 

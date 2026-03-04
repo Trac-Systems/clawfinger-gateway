@@ -59,6 +59,7 @@ In `~/.openclaw/openclaw.json`:
 | `clawfinger_call_state` | Full call state: history, instructions, takeover status |
 | `clawfinger_dial` | Dial outbound call via ADB |
 | `clawfinger_hangup` | Force hang up active call and end session |
+| `clawfinger_session_end` | Mark a call session as ended (hung up) — moves it from active to ended state |
 | `clawfinger_inject` | Inject TTS message into a live call |
 | `clawfinger_takeover` | Take over LLM control for a session |
 | `clawfinger_turn_wait` | Wait for the next caller turn during takeover (returns transcript + request_id) |
@@ -66,7 +67,7 @@ In `~/.openclaw/openclaw.json`:
 | `clawfinger_release` | Release LLM control back to local LLM |
 | `clawfinger_context_set` | Inject knowledge into session LLM context |
 | `clawfinger_context_clear` | Clear injected knowledge |
-| `clawfinger_instructions_set` | Set LLM system instructions (global/session/turn) |
+| `clawfinger_instructions_set` | Set LLM system instructions. Scope: `session` or `turn` (one-shot). Global scope only via REST `POST /api/instructions`. |
 | `clawfinger_call_config_get` | Read call policy settings |
 | `clawfinger_call_config_set` | Update call policy settings |
 

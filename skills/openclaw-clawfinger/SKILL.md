@@ -76,7 +76,7 @@ openclaw gateway restart
 |------|-------------|
 | `clawfinger_context_set` | Inject knowledge into a session — the LLM sees this before each user turn. Replaces existing context. |
 | `clawfinger_context_clear` | Clear injected knowledge from a session |
-| `clawfinger_instructions_set` | Set LLM system instructions. Scope: `global`, `session`, or `turn` (one-shot). |
+| `clawfinger_instructions_set` | Set LLM system instructions. Scope: `session` or `turn` (one-shot). Global scope only via REST `POST /api/instructions`. |
 
 ### Configuration
 
@@ -252,23 +252,6 @@ These tools interact with the robot endpoint via Intercom P2P transport. `clawfi
 |------|-------------|
 | `clawfinger_robot_snapshot` | Capture a camera frame from the robot. Optional params: `source`, `width`, `height`, `quality`. Returns image data. |
 | `clawfinger_robot_describe` | VLM scene description from robot camera. Optional params: `source`, `prompt`. Returns text description of what the camera sees. |
-
-### Future robot tools
-
-| Tool | Capability | Description |
-|------|-----------|-------------|
-| `clawfinger_robot_walk` | `locomotion` | Walk: direction, distance, speed |
-| `clawfinger_robot_turn` | `locomotion` | Turn: angle (degrees) |
-| `clawfinger_robot_stand` / `_sit` / `_stop` | `posture` | Posture commands |
-| `clawfinger_robot_pick_up` | `manipulation` | Pick up object by description |
-| `clawfinger_robot_place` | `manipulation` | Place object at target location |
-| `clawfinger_robot_hand_over` | `manipulation` | Extend hand, wait for take |
-| `clawfinger_robot_gesture` | `gesture` | Wave, point, nod, etc. |
-| `clawfinger_robot_speak` | `audio` | TTS on robot speaker |
-| `clawfinger_robot_listen` | `audio` | Mic capture + ASR |
-| `clawfinger_robot_task` | (any) | Submit compound task (async, validated against capabilities) |
-| `clawfinger_robot_task_status` | (any) | Check task progress |
-| `clawfinger_robot_task_cancel` | (any) | Cancel running task |
 
 ## Cross-Endpoint Workflows
 

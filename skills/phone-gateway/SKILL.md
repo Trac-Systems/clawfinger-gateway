@@ -780,6 +780,8 @@ Returns a JSON array of session ID strings:
 ```json
 {
   "session_id": "abc123",
+  "status": "active",
+  "ended_at": null,
   "history": [
     {"role": "user", "content": "Hi, I need help with my account."},
     {"role": "assistant", "content": "Sure! What's your account number?"}
@@ -797,6 +799,8 @@ Returns a JSON array of session ID strings:
 
 | Field | Description |
 |-------|-------------|
+| `status` | Session status: `"active"`, `"ended"`, or `"unknown"` |
+| `ended_at` | Unix timestamp when session ended (`null` if still active) |
 | `history` | Full conversation history (recent verbatim messages) |
 | `turn_count` | Number of completed turns |
 | `instructions` | Current instruction layers (base, session override, pending one-shot turn supplement) |
@@ -833,7 +837,7 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `takeover` | `session_id` | Take over LLM for a session (gateway forwards transcripts, agent replies) |
 | `release` | `session_id` | Release LLM control back to local LLM |
 | `inject` | `text`, `session_id` | Inject TTS message into call |
-| `set_instructions` | `instructions`, `session_id`, `scope` | Set instructions; scope: `global`, `session`, or `turn` |
+| `set_instructions` | `instructions`, `session_id`, `scope` | Set instructions; scope: `session` or `turn` (global only via REST `POST /api/instructions`) |
 | `set_call_config` | `config` | Update call policy settings (non-security subset only) |
 | `dial` | `number` | Dial outbound call |
 | `hangup` | `session_id` (optional) | Force hang up the active call and end gateway session |
@@ -842,8 +846,15 @@ The explicit component flag (`-n`) is required — Android 14+ silently drops im
 | `clear_context` | `session_id` | Clear injected agent knowledge |
 | `end_session` | `session_id` | Mark a session as ended (hung up) |
 | `ping` | — | Heartbeat |
+| `robot_command` | `command` | Send robot command (requires connected robot) |
+| `robot_status` | — | Query robot status |
+| `robot_skill_list` | — | List available robot skills |
+| `robot_project_status` | — | Query current project status |
+| `robot_project_cancel` | — | Cancel active project |
+| `robot_takeover` | — | Take over robot LLM (agent multimodal inference) |
+| `robot_release` | — | Release robot LLM |
 
-**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `hangup.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `end_session.ack`, `pong`.
+**Ack/response messages**: `takeover.ack`, `release.ack`, `set_instructions.ack`, `set_call_config.ack`, `dial.ack`, `hangup.ack`, `call_state`, `inject_context.ack`, `clear_context.ack`, `end_session.ack`, `pong`, `robot.command.ack`, `robot.status`, `robot.skill.list`, `robot.project.status`, `robot.project.cancel.ack`, `robot_takeover.ack`, `robot_release.ack`.
 
 **`set_call_config`** — agents can adjust greetings and call parameters but **NOT security settings**:
 

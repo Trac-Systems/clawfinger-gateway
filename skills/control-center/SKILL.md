@@ -13,12 +13,41 @@ The Clawfinger gateway serves a browser-based control center at `http://127.0.0.
 
 ## Tabs
 
-- **Status**: Gateway health, active sessions, LLM/ASR status, uptime
-- **Call**: Active call sessions, conversation history, inject TTS, takeover controls
-- **Config**: TTS voice/language, LLM model/parameters, call policy (greeting, auto-answer, blocklist)
-- **Robot**: Robot connection state, command dispatch, project status, perception panel, robot settings, robot LLM config
+Two tabs at the top:
+
+- **Phone**: Live call monitoring, call control, instructions, session log, agent panel, call policy, security, TTS settings, LLM settings, system status
+- **Robot**: Robot connection, robot status, task control, movement control, perception, robot audio, sensor readout, robot settings, robot LLM, spatial memory
+
+## Phone Tab Panels
+
+- **Live Monitor**: Real-time call transcript + turn count badge
+- **Call Control**: Dial, hangup, inject TTS, call status display
+- **Instructions**: Set global/session/turn LLM instructions
+- **Session Log**: Past sessions with history viewer
+- **Agent Panel**: Agent takeover status + inject button
+- **Call Policy**: Auto-answer, greetings, max duration, caller filtering
+- **Security**: Passphrase auth, allowlist/blocklist, unknown caller policy
+- **TTS Settings**: Voice selector, speed, language (EN/DE), Piper params when German
+- **LLM Settings**: Model, temperature, max tokens, system prompt
+- **System Status**: Gateway health, uptime, active sessions, LLM/ASR status
 
 ## Robot Tab Panels
+
+### Robot Connection Panel
+
+Shows transport type (WebSocket/Intercom), connection status badge, and connected robot model/capabilities.
+
+### Robot Status Panel
+
+Displays current robot state: battery, pose, active project, error messages.
+
+### Task Control Panel
+
+Voice-driven task input — type a natural language command (e.g. "walk to the kitchen") and the robot executes it as a project. Shows inline project progress with step tracking when a structured plan is active. Badge shows step count or "running" status.
+
+### Movement Control Panel
+
+Manual movement buttons: forward, backward, left turn, right turn, stop. Speed slider. Direct dispatch via robot_command.
 
 ### Robot Settings Panel
 
@@ -96,5 +125,5 @@ The control center uses relative timestamps throughout:
 - Reference photos are stored in the DB and used for visual re-identification on the robot
 - The Memory tab is always accessible regardless of robot connection state — you can teach the robot about persons and objects before it arrives
 - Security-sensitive settings (intercom keys, low-level control) are only editable from the control center, not from agents or the REST API
-- For REST API access to spatial memory (19 endpoints), see [robot-gateway/SKILL.md](../robot-gateway/SKILL.md#spatial-memory)
+- For REST API access to spatial memory, see [robot-gateway/SKILL.md](../robot-gateway/SKILL.md#spatial-memory)
 - For OpenClaw plugin tools (`clawfinger_memory_*`), see [openclaw-clawfinger/SKILL.md](../openclaw-clawfinger/SKILL.md#spatial-memory-tools)
