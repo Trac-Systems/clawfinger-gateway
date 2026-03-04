@@ -533,34 +533,80 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
   <div class="panel">
     <div class="panel-head">Robot Settings</div>
     <div class="panel-body" style="max-height:none">
+
+      <!-- Model + Transport -->
       <label style="font-size:12px;color:var(--fg2)">Model:</label>
       <select id="robot-model-select" onchange="updateRobotModel(this.value)">
         <option value="unitree_g1">Unitree G1</option>
       </select>
       <label style="font-size:12px;color:var(--fg2);margin-top:8px;display:block">Transport:</label>
-      <select id="robot-transport-select" disabled>
-        <option value="intercom">Intercom P2P</option>
+      <select id="robot-transport-select">
+        <option value="websocket">WebSocket (sim adapter)</option>
+        <option value="intercom">Intercom P2P (hardware)</option>
       </select>
+
       <hr style="border-color:var(--border);margin:12px 0">
+
+      <!-- Voice -->
       <label style="font-size:12px;color:var(--fg2)">Voice:</label>
       <select id="robot-voice-select">
-        <option value="am_adam">am_adam</option>
-        <option value="af_heart">af_heart</option>
+        <option value="am_adam">am_adam (EN male)</option>
+        <option value="af_heart">af_heart (EN female)</option>
+        <option value="am_michael">am_michael (EN male)</option>
+        <option value="bf_emma">bf_emma (EN female)</option>
       </select>
+      <div class="row" style="margin-top:6px">
+        <label style="font-size:12px;color:var(--fg2)">Language:</label>
+        <select id="robot-voice-lang" style="flex:1">
+          <option value="en">English (Kokoro)</option>
+          <option value="de">Deutsch (Piper)</option>
+        </select>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label style="font-size:12px;color:var(--fg2)">Speed:</label>
+        <input type="range" id="robot-voice-speed" min="0.5" max="2.0" step="0.1" value="1.0" style="flex:1">
+        <span id="robot-voice-speed-val" style="font-size:12px;width:35px">1.0</span>
+      </div>
+
       <hr style="border-color:var(--border);margin:12px 0">
+
+      <!-- Wake Word -->
+      <label style="font-size:12px;color:var(--fg2)">Wake Word:</label>
+      <div class="row" style="margin-top:4px">
+        <input id="robot-wake-word" value="Robert" style="flex:1" placeholder="e.g. Robert">
+        <label style="font-size:12px;color:var(--fg2);margin-left:8px">Timeout:</label>
+        <input id="robot-wake-timeout" type="number" value="30" min="5" max="120" style="width:55px"> <span style="font-size:11px;color:var(--fg2)">s</span>
+      </div>
+
+      <hr style="border-color:var(--border);margin:12px 0">
+
+      <!-- Safety -->
       <label style="font-size:12px;color:var(--fg2)">Safety:</label>
       <div class="row" style="margin-top:4px">
         <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="robot-safety-stop" checked disabled>
+          <input type="checkbox" id="robot-safety-stop" checked>
           Safety stop on disconnect
         </label>
       </div>
-      <div class="row">
+      <div class="row" style="margin-top:4px">
         <label style="font-size:12px;color:var(--fg2)">Max speed:</label>
-        <input type="range" id="robot-max-speed" min="0.1" max="1.5" step="0.1" value="0.5" style="flex:1">
-        <span id="robot-max-speed-val" style="font-size:12px;width:40px">0.5</span>
+        <input type="range" id="robot-safety-max-speed" min="0.1" max="1.0" step="0.05" value="0.3" style="flex:1">
+        <span id="robot-safety-max-speed-val" style="font-size:12px;width:35px">0.3</span>
       </div>
+      <div class="row" style="margin-top:4px">
+        <label style="font-size:12px;color:var(--fg2)">Max grasp force:</label>
+        <input type="range" id="robot-safety-grasp" min="0.1" max="1.0" step="0.05" value="0.8" style="flex:1">
+        <span id="robot-safety-grasp-val" style="font-size:12px;width:35px">0.8</span>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label style="font-size:12px;color:var(--fg2)">Max reach (m):</label>
+        <input type="range" id="robot-safety-reach" min="0.2" max="1.0" step="0.05" value="0.6" style="flex:1">
+        <span id="robot-safety-reach-val" style="font-size:12px;width:35px">0.6</span>
+      </div>
+
       <hr style="border-color:var(--border);margin:12px 0">
+
+      <!-- G1-Specific -->
       <div id="robot-model-settings">
         <label style="font-size:12px;color:var(--fg2)">G1-Specific:</label>
         <table class="config-table" style="margin-top:4px">
@@ -569,10 +615,41 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
           <tr><td>Hand Control</td><td><input type="checkbox" id="robot-hands" checked></td></tr>
         </table>
       </div>
+
       <div class="row" style="margin-top:12px">
         <button onclick="saveRobotConfig()">Save Robot Config</button>
       </div>
       <div id="robot-config-feedback" style="font-size:11px;margin-top:4px"></div>
+    </div>
+  </div>
+
+  <!-- Robot LLM -->
+  <div class="panel">
+    <div class="panel-head">Robot LLM <span style="font-size:11px;color:var(--fg2)">(overrides global LLM for robot)</span></div>
+    <div class="panel-body" style="max-height:none">
+      <div style="font-size:11px;color:var(--fg2);margin-bottom:8px">Leave empty to use global LLM settings. Only set values you want to override.</div>
+      <label style="font-size:12px;color:var(--fg2)">Model override:</label>
+      <input id="robot-llm-model" placeholder="(use global)" style="width:100%">
+      <div class="row" style="margin-top:6px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="robot-llm-multimodal"> Multimodal (images+video)
+        </label>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label style="font-size:12px;color:var(--fg2)">Max tokens:</label>
+        <input id="robot-llm-max-tokens" type="number" min="10" max="4096" placeholder="(global)" style="width:80px">
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label style="font-size:12px;color:var(--fg2)">Temperature:</label>
+        <input type="range" id="robot-llm-temp" min="0" max="2" step="0.05" value="0.25" style="flex:1">
+        <span id="robot-llm-temp-val" style="font-size:12px;width:35px">0.25</span>
+      </div>
+      <label style="font-size:12px;color:var(--fg2);margin-top:6px;display:block">System prompt:</label>
+      <textarea id="robot-llm-system-prompt" rows="3" style="width:100%;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;resize:vertical" placeholder="(uses global system prompt)"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button onclick="saveRobotLlmConfig()">Save Robot LLM</button>
+      </div>
+      <div id="robot-llm-feedback" style="font-size:11px;margin-top:4px"></div>
     </div>
   </div>
 
@@ -1424,12 +1501,55 @@ function robotCmd(cmd, dir) {
 function updateRobotModel() {}
 
 function saveRobotConfig() {
-  fetch('/api/config/robot', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      voice: document.getElementById('robot-voice-select').value,
-    })
+  const body = {
+    transport: document.getElementById('robot-transport-select').value,
+    voice: document.getElementById('robot-voice-select').value,
+    voice_lang: document.getElementById('robot-voice-lang').value,
+    voice_speed: parseFloat(document.getElementById('robot-voice-speed').value),
+    wake_word: document.getElementById('robot-wake-word').value,
+    wake_word_timeout: parseInt(document.getElementById('robot-wake-timeout').value) || 30,
+    safety_stop_on_disconnect: document.getElementById('robot-safety-stop').checked,
+    safety: {
+      max_speed: parseFloat(document.getElementById('robot-safety-max-speed').value),
+      max_grasp_force: parseFloat(document.getElementById('robot-safety-grasp').value),
+      max_reach_m: parseFloat(document.getElementById('robot-safety-reach').value),
+    },
+  };
+  // G1-specific
+  const ip = document.getElementById('robot-jetson-ip').value;
+  const dds = parseInt(document.getElementById('robot-dds-domain').value) || 0;
+  const hands = document.getElementById('robot-hands').checked;
+  body['unitree_g1.jetson_ip'] = ip;
+  body['unitree_g1.dds_domain'] = dds;
+  body['unitree_g1.enable_hands'] = hands;
+  fetch('/api/config/robot', {method:'POST', headers:{...authHeaders(), 'Content-Type':'application/json'},
+    body: JSON.stringify(body)
   }).then(r => r.json()).then(d => {
-    document.getElementById('robot-config-feedback').textContent = d.ok ? 'Saved.' : 'Error.';
+    const fb = document.getElementById('robot-config-feedback');
+    fb.textContent = d.ok ? 'Saved.' : 'Error.';
+    fb.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
+  });
+}
+
+function saveRobotLlmConfig() {
+  const llm = {};
+  const model = document.getElementById('robot-llm-model').value.trim();
+  if (model) llm.model = model;
+  const mm = document.getElementById('robot-llm-multimodal').checked;
+  llm.multimodal = mm;
+  const mt = document.getElementById('robot-llm-max-tokens').value;
+  if (mt) llm.max_tokens = parseInt(mt);
+  llm.temperature = parseFloat(document.getElementById('robot-llm-temp').value);
+  const sp = document.getElementById('robot-llm-system-prompt').value.trim();
+  if (sp) llm.system_prompt = sp;
+  fetch('/api/config/robot', {method:'POST', headers:{...authHeaders(), 'Content-Type':'application/json'},
+    body: JSON.stringify({llm})
+  }).then(r => r.json()).then(d => {
+    const fb = document.getElementById('robot-llm-feedback');
+    fb.textContent = d.ok ? 'Saved.' : 'Error.';
+    fb.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+    setTimeout(() => { fb.textContent = ''; }, 3000);
   });
 }
 
@@ -1660,7 +1780,7 @@ function setRobotDisconnected() {
 }
 
 function loadRobotConfig() {
-  fetch('/api/config/robot').then(r => r.json()).then(d => {
+  fetch('/api/config/robot', {headers:authHeaders()}).then(r => r.json()).then(d => {
     document.getElementById('robot-model').textContent = d.model || '--';
     document.getElementById('robot-transport').textContent = d.transport || '--';
     document.getElementById('robot-status').textContent = d.connected ? 'Connected' : 'Not connected';
@@ -1672,15 +1792,45 @@ function loadRobotConfig() {
       setRobotDisconnected();
     }
     updateRobotCapabilities(d);
+    // Populate settings fields
+    const sel = (id, val) => { const e = document.getElementById(id); if (e) e.value = val; };
+    const chk = (id, val) => { const e = document.getElementById(id); if (e) e.checked = !!val; };
+    const rng = (id, val, lblId) => { const e = document.getElementById(id); if (e) { e.value = val; } const l = document.getElementById(lblId); if (l) l.textContent = val; };
+    sel('robot-transport-select', d.transport || 'websocket');
+    sel('robot-voice-select', d.voice || 'am_adam');
+    sel('robot-voice-lang', d.voice_lang || 'en');
+    rng('robot-voice-speed', d.voice_speed || 1.0, 'robot-voice-speed-val');
+    sel('robot-wake-word', d.wake_word || 'Robert');
+    sel('robot-wake-timeout', d.wake_word_timeout || 30);
+    chk('robot-safety-stop', d.safety_stop_on_disconnect);
+    if (d.safety) {
+      rng('robot-safety-max-speed', d.safety.max_speed || 0.3, 'robot-safety-max-speed-val');
+      rng('robot-safety-grasp', d.safety.max_grasp_force || 0.8, 'robot-safety-grasp-val');
+      rng('robot-safety-reach', d.safety.max_reach_m || 0.6, 'robot-safety-reach-val');
+    }
+    if (d.model_config) {
+      sel('robot-jetson-ip', d.model_config.jetson_ip || '192.168.123.164');
+      sel('robot-dds-domain', d.model_config.dds_domain || 0);
+      chk('robot-hands', d.model_config.enable_hands !== false);
+    }
+    // Robot LLM
+    if (d.llm) {
+      sel('robot-llm-model', d.llm.model || '');
+      chk('robot-llm-multimodal', d.llm.multimodal);
+      sel('robot-llm-max-tokens', d.llm.max_tokens || '');
+      rng('robot-llm-temp', d.llm.temperature || 0.25, 'robot-llm-temp-val');
+      sel('robot-llm-system-prompt', d.llm.system_prompt || '');
+    }
   }).catch(() => {});
 }
 
-// Speed slider update
-document.getElementById('robot-speed')?.addEventListener('input', function() {
-  document.getElementById('robot-speed-val').textContent = this.value;
-});
-document.getElementById('robot-max-speed')?.addEventListener('input', function() {
-  document.getElementById('robot-max-speed-val').textContent = this.value;
+// Slider value display updates
+['robot-speed', 'robot-voice-speed', 'robot-safety-max-speed', 'robot-safety-grasp',
+ 'robot-safety-reach', 'robot-llm-temp'].forEach(id => {
+  document.getElementById(id)?.addEventListener('input', function() {
+    const lbl = document.getElementById(id + '-val');
+    if (lbl) lbl.textContent = this.value;
+  });
 });
 
 // --- Spatial Memory ---

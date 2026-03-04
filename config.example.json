@@ -29,7 +29,7 @@
   },
 
   "llm": {
-    "model": "Qwen3.5-4B-4bit",
+    "model": ".models/Qwen3.5-4B-4bit",
     "multimodal": true,
     "base_url": "",
     "api_key": "",

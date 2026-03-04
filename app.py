@@ -775,12 +775,26 @@ async def agent_call_state(sid: str) -> JSONResponse:
 
 # Keys agents are NOT allowed to set
 _ROBOT_SECURITY_KEYS = {
-    "intercom_key", "safety_stop_on_disconnect", "enable_low_level",
+    "intercom_key", "enable_low_level",
+}
+
+# Top-level robot config keys settable via REST API
+_ROBOT_SETTABLE_KEYS = {
+    "enabled", "model", "transport", "heartbeat_interval",
+    "disconnect_timeout", "disconnect_debounce",
+    "safety_stop_on_disconnect", "offline_mode",
+    "voice", "voice_lang", "voice_speed",
+    "wake_word", "wake_phrases", "wake_word_timeout", "wake_word_model",
+}
+
+# Nested robot config sections settable via REST API (sent as objects)
+_ROBOT_SETTABLE_SECTIONS = {
+    "safety", "camera", "audio_monitor", "memory", "llm",
 }
 
 
 def _robot_config_response() -> dict:
-    """Build robot config response dict."""
+    """Build robot config response dict — returns full robot config."""
     robot_cfg = config.section("robot")
     model_name = robot_cfg.get("model", "unitree_g1")
     model_info = robot_mod.get_model(model_name)
@@ -797,6 +811,15 @@ def _robot_config_response() -> dict:
         "offline_mode": robot_cfg.get("offline_mode", "complete_task"),
         "voice": robot_cfg.get("voice", "am_adam"),
         "voice_lang": robot_cfg.get("voice_lang", "en"),
+        "voice_speed": robot_cfg.get("voice_speed", 1.0),
+        "wake_word": robot_cfg.get("wake_word", "Robert"),
+        "wake_phrases": robot_cfg.get("wake_phrases", []),
+        "wake_word_timeout": robot_cfg.get("wake_word_timeout", 30),
+        "safety": robot_cfg.get("safety", {}),
+        "camera": robot_cfg.get("camera", {}),
+        "audio_monitor": robot_cfg.get("audio_monitor", {}),
+        "memory": robot_cfg.get("memory", {}),
+        "llm": robot_cfg.get("llm", {}),
         "model_config": robot_cfg.get(model_name, {}),
     }
     # Add transport state when bridge is available
@@ -823,12 +846,15 @@ async def update_robot_config(request: Request) -> JSONResponse:
         if key in _ROBOT_SECURITY_KEYS:
             continue  # skip security keys
         if key.startswith(f"{model_name}."):
-            # Model-specific key
+            # Model-specific key (e.g. unitree_g1.jetson_ip)
             config.set(f"robot.{model_name}.{key[len(model_name)+1:]}", value)
-        elif key in ("enabled", "model", "transport", "heartbeat_interval",
-                     "disconnect_timeout", "disconnect_debounce",
-                     "safety_stop_on_disconnect", "offline_mode",
-                     "voice", "voice_lang"):
+        elif key in _ROBOT_SETTABLE_SECTIONS and isinstance(value, dict):
+            # Nested section — merge keys
+            for sk, sv in value.items():
+                if sk.startswith("_"):
+                    continue  # skip comments
+                config.set(f"robot.{key}.{sk}", sv)
+        elif key in _ROBOT_SETTABLE_KEYS:
             config.set(f"robot.{key}", value)
     config.save()
     await bus.publish("config.robot_updated", _robot_config_response())
