@@ -5,8 +5,9 @@ A local voice gateway that runs the full **ASR → LLM → TTS** pipeline on App
 ## Architecture
 
 ```
-Phone (Android) ──ADB──► Gateway (:8996) ◄──WS/Intercom──► Robot (Jetson/Sim)
-                             │
+                                        ┌── Intercom P2P ──► Jetson (hardware robot)
+Phone (Android) ──ADB──► Gateway (:8996)┤
+                             │          └── WebSocket ──────► Isaac Sim (sim adapter)
                     ┌────────┼────────┐
                     ▼        ▼        ▼
               mlx_audio   mlx-vlm   Piper
@@ -15,7 +16,7 @@ Phone (Android) ──ADB──► Gateway (:8996) ◄──WS/Intercom──►
 ```
 
 - **Phone endpoint**: Caller audio → ASR → LLM → TTS → audio back. The phone connects via `adb reverse tcp:8996`.
-- **Robot endpoint**: Voice commands → LLM decomposes into actions → dispatched to robot via Intercom P2P or WebSocket. Camera/mic perception, spatial memory, multi-step project orchestration.
+- **Robot endpoint**: Voice commands → LLM decomposes into actions → dispatched to robot via [Intercom](https://github.com/Trac-Systems/intercom/) P2P (Hyperswarm/HyperDHT) for hardware or WebSocket for simulation. Camera/mic perception, spatial memory, multi-step project orchestration.
 - **Agent interface**: External agents (OpenClaw, custom) observe sessions, take over LLM, inject context, control both phone and robot.
 - **Control center**: Browser UI at `:8996` for live management of everything.
 
