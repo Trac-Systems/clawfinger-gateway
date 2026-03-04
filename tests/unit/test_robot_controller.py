@@ -240,7 +240,9 @@ class TestProjectLifecycle:
         with patch("event_bus.bus.publish", new_callable=AsyncMock):
             result = await robot_ctrl.cancel_project()
         assert result["ok"] is True
-        assert robot_ctrl._PROJECT is None
+        # Project lingers for 5s after cancel before clearing
+        assert robot_ctrl._PROJECT is not None
+        assert robot_ctrl._PROJECT["status"] == "cancelled"
 
     def test_current_project_idle(self):
         assert robot_ctrl.current_project() is None
