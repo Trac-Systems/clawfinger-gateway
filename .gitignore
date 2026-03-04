@@ -29,6 +29,9 @@ voices/*.onnx.json
 # Intercom (cloned locally, not shipped)
 intercom/
 
+# Sim adapter (machine-specific scripts)
+sim-adapter/restart.sh
+
 # Misc
 linked.txt
 test_takeover.py
