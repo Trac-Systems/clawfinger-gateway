@@ -91,9 +91,11 @@ async def dispatch_command(model_name: str, command: dict) -> dict:
 
     # Check capability requirement (command type maps to capability)
     cmd_type = command.get("type", "")
-    required_cap = _COMMAND_CAPABILITIES.get(cmd_type)
-    if required_cap and not has_capability(model_name, required_cap):
-        return {"ok": False, "error": f"Capability '{required_cap}' not supported by {model_name}"}
+    # Some commands (reset, task) bypass capability checks
+    if cmd_type not in ("reset", "task"):
+        required_cap = _COMMAND_CAPABILITIES.get(cmd_type)
+        if required_cap and not has_capability(model_name, required_cap):
+            return {"ok": False, "error": f"Capability '{required_cap}' not supported by {model_name}"}
 
     return await handler(command)
 

@@ -431,8 +431,8 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
     <div class="panel-body">
       <label style="font-size:12px;color:var(--fg2)">Submit task:</label>
       <div class="row" style="margin-top:4px">
-        <input id="robot-task-input" placeholder="e.g. walk to the door" style="flex:1">
-        <button onclick="submitRobotTask()" disabled>Send</button>
+        <input id="robot-task-input" data-cap="locomotion" placeholder="e.g. walk to the door" style="flex:1" disabled>
+        <button data-cap="locomotion" onclick="submitRobotTask()" disabled>Send</button>
       </div>
       <div id="robot-task-feedback" style="font-size:11px;margin-top:4px"></div>
       <hr style="border-color:var(--border);margin:12px 0">
@@ -446,26 +446,26 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
     <div class="panel-head">Movement Control</div>
     <div class="panel-body" style="text-align:center">
       <div class="row" style="justify-content:center">
-        <button class="secondary" onclick="robotCmd('walk','forward')" disabled style="padding:8px 16px">Forward</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('walk','forward')" disabled style="padding:8px 16px">Forward</button>
       </div>
       <div class="row" style="justify-content:center">
-        <button class="secondary" onclick="robotCmd('turn','left')" disabled style="padding:8px 16px">Left</button>
-        <button class="danger" onclick="robotCmd('stop')" disabled style="padding:8px 16px">STOP</button>
-        <button class="secondary" onclick="robotCmd('turn','right')" disabled style="padding:8px 16px">Right</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('turn','left')" disabled style="padding:8px 16px">Left</button>
+        <button class="danger" data-cap="locomotion" onclick="robotCmd('stop')" disabled style="padding:8px 16px">STOP</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('turn','right')" disabled style="padding:8px 16px">Right</button>
       </div>
       <div class="row" style="justify-content:center">
-        <button class="secondary" onclick="robotCmd('walk','backward')" disabled style="padding:8px 16px">Back</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('walk','backward')" disabled style="padding:8px 16px">Back</button>
       </div>
       <hr style="border-color:var(--border);margin:12px 0">
       <div class="row" style="justify-content:center">
-        <button class="secondary" onclick="robotCmd('stand')" disabled>Stand</button>
-        <button class="secondary" onclick="robotCmd('sit')" disabled>Sit</button>
-        <button class="secondary" onclick="robotCmd('crouch')" disabled>Crouch</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('stand')" disabled>Stand</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('sit')" disabled>Sit</button>
+        <button class="secondary" data-cap="locomotion" onclick="robotCmd('reset')" disabled style="background:var(--accent);color:#fff">Reset</button>
       </div>
       <div class="row" style="margin-top:8px">
         <label style="font-size:12px;color:var(--fg2)">Speed:</label>
-        <input type="range" id="robot-speed" min="0.1" max="1.0" step="0.1" value="0.3" disabled style="flex:1">
-        <span id="robot-speed-val" style="font-size:12px;width:40px">0.3</span>
+        <input type="range" id="robot-speed" data-cap="locomotion" min="0.1" max="1.0" step="0.1" value="0.5" disabled style="flex:1">
+        <span id="robot-speed-val" style="font-size:12px;width:40px">0.50</span>
       </div>
     </div>
   </div>
@@ -499,7 +499,7 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
       <label style="font-size:12px;color:var(--fg2)">Speak text:</label>
       <div class="row" style="margin-top:4px">
         <input id="robot-speak-text" placeholder="Text to speak on robot..." style="flex:1">
-        <button onclick="robotSpeak()" disabled>Speak</button>
+        <button data-cap="audio" onclick="robotSpeak()" disabled>Speak</button>
       </div>
       <hr style="border-color:var(--border);margin:12px 0">
       <label style="font-size:12px;color:var(--fg2)">Audio Monitor:</label>
@@ -672,6 +672,12 @@ button.secondary { background: var(--bg3); color: var(--fg); border: 1px solid v
 
 <script>
 const BASE = location.origin;
+const _BEARER = window.__BEARER__ || '';
+function authHeaders(extra) {
+  const h = Object.assign({'Content-Type':'application/json'}, extra || {});
+  if (_BEARER) h['Authorization'] = 'Bearer ' + _BEARER;
+  return h;
+}
 let ws = null;
 let turnCounter = 0;
 let agentWs = null;
@@ -747,12 +753,59 @@ function handleEvent(evt) {
     setRobotDisconnected();
   } else if (t === 'robot.scene_description') {
     document.getElementById('robot-scene-desc').textContent = d.description || '';
+  } else if (t === 'robot.event.state') {
+    updateRobotState(d);
   } else if (t && t.startsWith('robot.memory.')) {
     loadMemoryStats();
     if (t.includes('person')) loadMemPersons();
     else if (t.includes('object')) loadMemObjects();
     else if (t.includes('room')) loadMemRooms();
     else if (t.includes('routine')) loadMemRoutines();
+  }
+}
+
+let _robotStateStart = 0;
+function updateRobotState(d) {
+  if (!_robotStateStart) _robotStateStart = Date.now();
+  const now = Date.now();
+  // Uptime
+  const up = Math.floor((now - _robotStateStart) / 1000);
+  const upM = Math.floor(up / 60), upS = up % 60;
+  const el = (id) => document.getElementById(id);
+  el('robot-uptime').textContent = `${upM}m ${upS}s`;
+  // Latency (time since state was generated)
+  const ts = d.timestamp;
+  if (ts) {
+    const latMs = Math.max(0, Math.round(now - ts * 1000));
+    el('robot-latency').textContent = latMs < 5000 ? `${latMs} ms` : '--';
+  }
+  // IMU
+  const imu = d.imu;
+  if (imu && imu.quaternion) {
+    const [w, x, y, z] = imu.quaternion;
+    const roll = Math.atan2(2*(w*x + y*z), 1-2*(x*x + y*y)) * 180/Math.PI;
+    const pitch = Math.asin(Math.max(-1,Math.min(1, 2*(w*y - z*x)))) * 180/Math.PI;
+    const yaw = Math.atan2(2*(w*z + x*y), 1-2*(y*y + z*z)) * 180/Math.PI;
+    el('robot-imu-roll').textContent = roll.toFixed(1) + '°';
+    el('robot-imu-pitch').textContent = pitch.toFixed(1) + '°';
+    el('robot-imu-yaw').textContent = yaw.toFixed(1) + '°';
+  }
+  // World pose
+  const pose = d.world_pose;
+  if (pose) {
+    el('robot-pose').textContent = `x=${pose.x?.toFixed(2)} y=${pose.y?.toFixed(2)} z=${pose.z?.toFixed(2)} θ=${(pose.theta||0).toFixed(2)}`;
+  }
+  // Battery (sim doesn't have battery, show N/A)
+  const batt = d.battery;
+  el('robot-battery').textContent = batt != null ? batt + '%' : 'N/A (sim)';
+  // Grippers
+  const joints = d.joint_positions;
+  if (joints && joints.length > 0) {
+    // Left/right gripper are the last joints typically
+    const lGrip = el('robot-gripper-l');
+    const rGrip = el('robot-gripper-r');
+    if (lGrip) lGrip.textContent = joints.length + ' joints';
+    if (rGrip) rGrip.textContent = 'active';
   }
 }
 
@@ -1341,8 +1394,33 @@ let audioCtx = null;
 let audioNextTime = 0;
 let robotCaps = new Set();
 
-function submitRobotTask() {}
-function robotCmd() {}
+function submitRobotTask() {
+  const input = document.getElementById('robot-task-input');
+  const text = input.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({type:'robot_command', command:{type:'task', params:{task:text}}}));
+  const fb = document.getElementById('robot-task-feedback');
+  fb.textContent = 'Sent: ' + text;
+  input.value = '';
+}
+function robotCmd(cmd, dir) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const speed = parseFloat(document.getElementById('robot-speed').value) || 0.3;
+  let command = {};
+  if (cmd === 'walk') {
+    const vx = dir === 'forward' ? speed : dir === 'backward' ? -speed : 0;
+    const vy = dir === 'left' ? speed : dir === 'right' ? -speed : 0;
+    command = {type:'walk', params:{vx, vy, vyaw:0}};
+  } else if (cmd === 'turn') {
+    const vyaw = dir === 'left' ? speed : -speed;
+    command = {type:'turn', params:{vyaw}};
+  } else if (cmd === 'stop') {
+    command = {type:'stop'};
+  } else {
+    command = {type:cmd};
+  }
+  ws.send(JSON.stringify({type:'robot_command', command}));
+}
 function updateRobotModel() {}
 
 function saveRobotConfig() {
@@ -1362,7 +1440,7 @@ async function robotSnapshot() {
   btn.textContent = 'Capturing...';
   try {
     const r = await fetch('/api/robot/camera/snapshot', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
+      method: 'POST', headers: authHeaders(),
       body: JSON.stringify(source ? {source} : {})
     });
     const d = await r.json();
@@ -1380,7 +1458,7 @@ async function robotDescribe() {
   const descEl = document.getElementById('robot-scene-desc');
   try {
     const r = await fetch('/api/robot/camera/describe', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
+      method: 'POST', headers: authHeaders(),
       body: JSON.stringify(source ? {source} : {})
     });
     const d = await r.json();
@@ -1400,7 +1478,7 @@ async function toggleVideoStream() {
   const source = document.getElementById('robot-camera-source').value;
   if (videoStreaming) {
     await fetch('/api/robot/camera/stream/stop', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
+      method: 'POST', headers: authHeaders(),
       body: JSON.stringify(source ? {source} : {})
     });
     stopVideoStream();
@@ -1409,7 +1487,7 @@ async function toggleVideoStream() {
     btn.textContent = 'Starting...';
     try {
       const r = await fetch('/api/robot/camera/stream/start', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+        method: 'POST', headers: authHeaders(),
         body: JSON.stringify(source ? {source} : {})
       });
       const d = await r.json();
@@ -1419,9 +1497,9 @@ async function toggleVideoStream() {
         btn.disabled = false;
         const img = document.getElementById('robot-camera-img');
         const ph = document.getElementById('robot-camera-placeholder');
-        const bearer = ''; // MJPEG auth via query param if needed
         const streamSource = d.source || source;
-        img.src = `/api/robot/camera/stream?source=${encodeURIComponent(streamSource)}`;
+        const tokenParam = _BEARER ? `&token=${encodeURIComponent(_BEARER)}` : '';
+        img.src = `/api/robot/camera/stream?source=${encodeURIComponent(streamSource)}${tokenParam}`;
         img.style.display = '';
         ph.style.display = 'none';
       }
@@ -1445,7 +1523,7 @@ async function toggleAudioMonitor() {
   const btn = document.getElementById('btn-audio-monitor');
   if (audioMonitoring) {
     await fetch('/api/robot/audio/monitor/stop', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
+      method: 'POST', headers: authHeaders(),
       body: JSON.stringify({})
     });
     stopAudioMonitor();
@@ -1454,7 +1532,7 @@ async function toggleAudioMonitor() {
     btn.textContent = 'Starting...';
     try {
       const r = await fetch('/api/robot/audio/monitor/start', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+        method: 'POST', headers: authHeaders(),
         body: JSON.stringify({})
       });
       const d = await r.json();
@@ -1508,11 +1586,17 @@ function showCameraImage(base64Data) {
   ph.style.display = 'none';
 }
 
-function robotSpeak() {}
+function robotSpeak() {
+  const input = document.getElementById('robot-speak-text');
+  const text = input.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({type:'robot_command', command:{type:'speak', params:{text}}}));
+  input.value = '';
+}
 
 async function loadPerceptionSources() {
   try {
-    const r = await fetch('/api/robot/perception');
+    const r = await fetch('/api/robot/perception', {headers:authHeaders()});
     const d = await r.json();
     const sel = document.getElementById('robot-camera-source');
     sel.innerHTML = '';
@@ -1552,6 +1636,9 @@ function updateRobotCapabilities(cfg) {
   const gripR = document.getElementById('sensor-gripper-row-r');
   if (gripL) gripL.style.display = hasManip ? '' : 'none';
   if (gripR) gripR.style.display = hasManip ? '' : 'none';
+  // Audio buttons (speak)
+  document.querySelectorAll('[data-cap="audio"]').forEach(
+    el => el.disabled = !(hasAudio));
   // Movement buttons
   document.querySelectorAll('[data-cap="locomotion"]').forEach(
     el => el.disabled = !(caps.has('locomotion') && connected));
@@ -1612,7 +1699,7 @@ function switchMemTab(tab) {
 
 async function loadMemoryStats() {
   try {
-    const r = await fetch('/api/robot/memory/stats');
+    const r = await fetch('/api/robot/memory/stats', {headers:authHeaders()});
     const d = await r.json();
     if (!d.initialized) { document.getElementById('mem-stats-badge').textContent = 'off'; return; }
     const ent = (d.persons || 0) + (d.objects || 0) + (d.rooms || 0);
@@ -1620,7 +1707,7 @@ async function loadMemoryStats() {
     // Populate room filter
     const sel = document.getElementById('mem-query-room');
     const cur = sel.value;
-    const rooms = await fetch('/api/robot/memory/rooms').then(r2 => r2.json());
+    const rooms = await fetch('/api/robot/memory/rooms', {headers:authHeaders()}).then(r2 => r2.json());
     sel.innerHTML = '<option value="">Any room</option>';
     rooms.forEach(rm => { const o = document.createElement('option'); o.value = rm.name; o.textContent = rm.name; sel.appendChild(o); });
     if (cur) sel.value = cur;
@@ -1629,7 +1716,7 @@ async function loadMemoryStats() {
 
 async function loadMemPersons() {
   try {
-    const r = await fetch('/api/robot/memory/persons');
+    const r = await fetch('/api/robot/memory/persons', {headers:authHeaders()});
     const persons = await r.json();
     const el = document.getElementById('mem-persons-list');
     if (!persons.length) { el.innerHTML = '<div class="empty">No persons.</div>'; return; }
@@ -1651,7 +1738,7 @@ async function addMemPerson() {
     const b64 = await fileToBase64(file);
     body.reference_images = [b64];
   }
-  await fetch('/api/robot/memory/persons', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  await fetch('/api/robot/memory/persons', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
   document.getElementById('mem-person-name').value = '';
   document.getElementById('mem-person-desc').value = '';
   fileInput.value = '';
@@ -1660,14 +1747,14 @@ async function addMemPerson() {
 }
 
 async function deleteMemPerson(id) {
-  await fetch('/api/robot/memory/persons/' + id, { method:'DELETE' });
+  await fetch('/api/robot/memory/persons/' + id, { method:'DELETE', headers:authHeaders() });
   loadMemPersons();
   loadMemoryStats();
 }
 
 async function loadMemObjects() {
   try {
-    const r = await fetch('/api/robot/memory/objects');
+    const r = await fetch('/api/robot/memory/objects', {headers:authHeaders()});
     const objects = await r.json();
     const el = document.getElementById('mem-objects-list');
     if (!objects.length) { el.innerHTML = '<div class="empty">No objects.</div>'; return; }
@@ -1689,7 +1776,7 @@ async function addMemObject() {
     const b64 = await fileToBase64(file);
     body.reference_images = [b64];
   }
-  await fetch('/api/robot/memory/objects', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  await fetch('/api/robot/memory/objects', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
   document.getElementById('mem-object-name').value = '';
   document.getElementById('mem-object-desc').value = '';
   fileInput.value = '';
@@ -1698,14 +1785,14 @@ async function addMemObject() {
 }
 
 async function deleteMemObject(id) {
-  await fetch('/api/robot/memory/objects/' + id, { method:'DELETE' });
+  await fetch('/api/robot/memory/objects/' + id, { method:'DELETE', headers:authHeaders() });
   loadMemObjects();
   loadMemoryStats();
 }
 
 async function loadMemRooms() {
   try {
-    const r = await fetch('/api/robot/memory/rooms');
+    const r = await fetch('/api/robot/memory/rooms', {headers:authHeaders()});
     const rooms = await r.json();
     const el = document.getElementById('mem-rooms-list');
     if (!rooms.length) { el.innerHTML = '<div class="empty">No rooms.</div>'; return; }
@@ -1719,7 +1806,7 @@ async function addMemRoom() {
   const name = document.getElementById('mem-room-name').value.trim();
   if (!name) return;
   const desc = document.getElementById('mem-room-desc').value.trim();
-  await fetch('/api/robot/memory/rooms', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, description: desc }) });
+  await fetch('/api/robot/memory/rooms', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name, description: desc }) });
   document.getElementById('mem-room-name').value = '';
   document.getElementById('mem-room-desc').value = '';
   loadMemRooms();
@@ -1727,14 +1814,14 @@ async function addMemRoom() {
 }
 
 async function deleteMemRoom(id) {
-  await fetch('/api/robot/memory/rooms/' + id, { method:'DELETE' });
+  await fetch('/api/robot/memory/rooms/' + id, { method:'DELETE', headers:authHeaders() });
   loadMemRooms();
   loadMemoryStats();
 }
 
 async function loadMemRoutines() {
   try {
-    const r = await fetch('/api/robot/memory/routines');
+    const r = await fetch('/api/robot/memory/routines', {headers:authHeaders()});
     const routines = await r.json();
     const el = document.getElementById('mem-routines-list');
     if (!routines.length) { el.innerHTML = '<div class="empty">No routines.</div>'; return; }
@@ -1750,7 +1837,7 @@ async function addMemRoutine() {
   if (!name) return;
   const schedule = document.getElementById('mem-routine-schedule').value.trim();
   const desc = document.getElementById('mem-routine-desc').value.trim();
-  await fetch('/api/robot/memory/routines', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name, schedule, description: desc }) });
+  await fetch('/api/robot/memory/routines', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name, schedule, description: desc }) });
   document.getElementById('mem-routine-name').value = '';
   document.getElementById('mem-routine-schedule').value = '';
   document.getElementById('mem-routine-desc').value = '';
@@ -1759,7 +1846,7 @@ async function addMemRoutine() {
 }
 
 async function deleteMemRoutine(id) {
-  await fetch('/api/robot/memory/routines/' + id, { method:'DELETE' });
+  await fetch('/api/robot/memory/routines/' + id, { method:'DELETE', headers:authHeaders() });
   loadMemRoutines();
   loadMemoryStats();
 }
@@ -1774,7 +1861,7 @@ async function queryMemory() {
   if (entityType) filters.entity_type = entityType;
   const body = { type: 'text', text, filters, n_results: 20 };
   try {
-    const r = await fetch('/api/robot/memory/query', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const r = await fetch('/api/robot/memory/query', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
     const d = await r.json();
     const el = document.getElementById('mem-query-results');
     if (!d.results || !d.results.length) { el.innerHTML = '<div class="empty">No results.</div>'; return; }

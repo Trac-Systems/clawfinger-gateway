@@ -23,9 +23,16 @@ async def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         })
         return {"ok": True, "detail": "sent"}
 
-    # Request/response commands — wait for correlated response
+    # Request/response commands — wait for correlated response.
+    # Forward all command keys as params (vx, vy, vyaw, etc. may be
+    # at the top level or nested under "params").
+    params = command.get("params", {})
+    # Merge top-level keys into params (top-level keys like vx, vy take priority)
+    for k, v in command.items():
+        if k not in ("type", "params", "timeout"):
+            params.setdefault(k, v)
     return await transport.send_and_wait({
         "type": "robot_command",
         "command": cmd_type,
-        "params": command.get("params", {}),
+        "params": params,
     }, timeout=command.get("timeout", 10.0))
