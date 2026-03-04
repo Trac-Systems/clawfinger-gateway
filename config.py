@@ -66,23 +66,10 @@ _FLAT_TO_NESTED: dict[str, str] = {
 }
 
 
-_ADB_SEARCH_PATHS = [
-    "/opt/homebrew/bin/adb",
-    "/opt/homebrew/Caskroom/android-platform-tools/36.0.2/platform-tools/adb",
-    "/usr/local/bin/adb",
-    "/usr/bin/adb",
-]
-
-
 def _find_adb() -> str:
-    """Auto-discover ADB binary: PATH first, then known locations."""
+    """Auto-discover ADB binary via PATH lookup."""
     found = shutil.which("adb")
-    if found:
-        return found
-    for path in _ADB_SEARCH_PATHS:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return "adb"  # fallback to bare name
+    return found or "adb"
 
 
 def _cast(value: str, reference: Any) -> Any:

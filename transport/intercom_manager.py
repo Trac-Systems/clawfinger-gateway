@@ -16,23 +16,17 @@ _ROOT = Path(__file__).resolve().parent.parent
 _TMP_DIR = _ROOT / "tmp"
 _PID_FILE = _TMP_DIR / "intercom.pid"
 
-_PEAR_SEARCH_PATHS = [
-    "/usr/local/bin/pear",
-    os.path.expanduser("~/local/node/bin/pear"),
-    "/opt/homebrew/bin/pear",
-]
-
-
 def _find_pear(configured: str = "") -> str:
-    """Auto-discover pear binary: config value, then PATH, then known locations."""
+    """Auto-discover pear binary: config value, then PATH, then ~/local/node/bin/."""
     if configured:
         return configured
     found = shutil.which("pear")
     if found:
         return found
-    for path in _PEAR_SEARCH_PATHS:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
+    # Check common user-local Node install
+    home_pear = os.path.expanduser("~/local/node/bin/pear")
+    if os.path.isfile(home_pear) and os.access(home_pear, os.X_OK):
+        return home_pear
     return "pear"  # fallback to bare name
 
 

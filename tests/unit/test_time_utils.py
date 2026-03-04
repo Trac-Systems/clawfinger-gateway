@@ -121,7 +121,7 @@ class TestParseNaturalTime:
 class TestAnnotateResults:
     def test_adds_time_ago(self):
         results = [
-            {"entity_name": "Markus", "timestamp": time.time() - 300},
+            {"entity_name": "Alice", "timestamp": time.time() - 300},
             {"entity_name": "Cup", "timestamp": time.time() - 7200},
         ]
         annotated = time_utils.annotate_results(results)

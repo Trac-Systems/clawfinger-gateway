@@ -529,7 +529,7 @@ Each observation stores 7 query dimensions:
 {
     "entity_type": "person",         # person | object | scene
     "entity_id": "abc123",           # matched entity ID
-    "entity_name": "Markus",         # matched entity name
+    "entity_name": "Alex",           # matched entity name
     "room": "kitchen",               # room zone
     "description": "Person near counter",
     "labels": "person,counter",      # detection labels

@@ -2,7 +2,7 @@
 
 Requires:
   - Isaac Sim 5.1 conda env (g1sim)
-  - unitree_sim_isaaclab checked out at /home/muffin/robotics/unitree_sim_isaaclab
+  - unitree_sim_isaaclab (set UNITREE_SIM_PATH or PROJECT_ROOT env var)
 
 IMPORTANT: This module must be imported AFTER AppLauncher has been
 initialized.  adapter.py handles this in the Isaac launch path.

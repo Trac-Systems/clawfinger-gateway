@@ -133,7 +133,7 @@ curl -s -X POST "$GW/api/config/call" \
   -H "Content-Type: application/json" \
   -d '{
     "greeting_incoming": "Hello, I am {owner}'\''s assistant. How can I help you?",
-    "greeting_owner": "Markus"
+    "greeting_owner": "Alex"
   }' | jq .
 ```
 
@@ -412,7 +412,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/memory/persons" | jq .
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "$GW/api/robot/memory/persons" \
-  -d '{"name": "Markus", "description": "Owner"}' | jq .
+  -d '{"name": "Alex", "description": "Owner"}' | jq .
 
 # Query spatial memory
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
@@ -430,7 +430,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "$GW/api/robot/memory/last_seen" \
-  -d '{"entity_name": "Markus"}' | jq .
+  -d '{"entity_name": "Alex"}' | jq .
 
 # Memory stats (includes temporal range)
 curl -s -H "Authorization: Bearer $TOKEN" "$GW/api/robot/memory/stats" | jq .
